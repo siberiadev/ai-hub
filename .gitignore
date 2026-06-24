@@ -9,6 +9,9 @@
 # Claude workspace (файлы, которыми управляет claude)
 /workspace
 
+# Локальная память сессий (личные заметки — не в публичный репо)
+/_memory
+
 # Logs
 logs
 *.log

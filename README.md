@@ -121,7 +121,7 @@ npm run start:prod       # прод (после npm run build)
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | да (иначе бот выключен) | токен от BotFather |
 | `TELEGRAM_ALLOWED_USER_IDS` | да | разрешённые user id (csv) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | на сервере | токен подписки (`claude setup-token`) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | опционально | обычно не нужен — на сервере авторизуйтесь через `claude /login` |
 | `CLAUDE_WORKSPACE` | реком. | рабочая папка для файлов claude |
 | `CLAUDE_PERMISSION_MODE` | реком. | `bypassPermissions` для headless-инструментов |
 | `WHISPER_*`, `FFMPEG_BIN` | для голоса | см. шаг 4 |
@@ -135,11 +135,18 @@ npm run test:cov     # покрытие
 
 ---
 
-## 📦 Деплой на сервер (кратко)
+## 📦 Деплой на сервер — одной командой
 
-1. Поставить зависимости из разделов 1–4 выше (Node, claude CLI + `setup-token`, при нужде ffmpeg+whisper).
-2. `npm ci && npm run build`.
-3. Прописать `.env` (с `CLAUDE_CODE_OAUTH_TOKEN`, без `ANTHROPIC_API_KEY`).
-4. Завести systemd-юнит на `node dist/main` с автозапуском (план — отдельно).
-5. В первые дни сверять расход на дашбордах claude.ai / platform.claude.com (должна быть подписка, не API).
+На Ubuntu/Debian-дроплете (под обычным пользователем, **не root**):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/siberiadev/ai-hub/main/scripts/bootstrap.sh | bash
+# с голосовыми (нужен дроплет ≥ 4 ГБ):
+curl -fsSL https://raw.githubusercontent.com/siberiadev/ai-hub/main/scripts/bootstrap.sh | bash -s -- --with-voice
+```
+
+Скрипт ставит все зависимости (раздел выше), собирает проект, **интерактивно спрашивает переменные
+`.env`**, помогает с `claude /login` и поднимает systemd-демон с автозапуском.
+
+Подробности, управление сервисом и обновление — в [DEPLOY.md](./DEPLOY.md).
 </content>
