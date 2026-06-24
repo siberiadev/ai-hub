@@ -1,6 +1,9 @@
 /** Лимит длины одного сообщения Telegram. */
 export const TELEGRAM_MAX_LEN = 4096;
 
+/** Лимит длины rich-сообщения (Bot API 10.1). */
+export const RICH_MAX_LEN = 32768;
+
 /**
  * Режет текст на части не длиннее `size`. Старается резать по переводам строк;
  * слишком длинную строку рубит жёстко. Пустой/пробельный текст → одна заглушка.
@@ -56,4 +59,21 @@ export function formatAge(timestampMs: number, now = Date.now()): string {
 /** Строка прогресса для tool_use. */
 export function progressLine(toolName?: string): string {
   return toolName ? `🔧 ${toolName}…` : '🤔 думаю…';
+}
+
+/**
+ * Готовит текст для live-превью в editMessageText (≤ лимита). Длинный текст
+ * усекаем с многоточием — финальный ответ всё равно уйдёт через chunk().
+ */
+export function clampForEdit(text: string, max = TELEGRAM_MAX_LEN): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 1) + '…';
+}
+
+/**
+ * Можно ли отрендерить ответ как rich-сообщение (нативные таблицы/заголовки):
+ * включён флаг, текст непустой и помещается в лимит rich. Иначе — обычный текст.
+ */
+export function canRenderRich(body: string, enabled: boolean): boolean {
+  return enabled && !!body.trim() && body.length <= RICH_MAX_LEN;
 }

@@ -1,98 +1,145 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# ai-hub — мост Telegram ↔ Claude CLI
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Персональный AI-ассистент: Telegram-бот запускает `claude` CLI как подпроцесс, ведёт сессии,
+отдаёт ответы (стриминг, нативные таблицы, кнопки-вопросы) и распознаёт голосовые сообщения.
+Работает **строго на подписке Claude Pro/Max** (без оплаты по API).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+> Стек: NestJS 11 · grammY (Telegram) · better-sqlite3 · whisper.cpp (STT).
 
-## Description
+---
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## ⚙️ Зависимости вне `npm install`
 
-## Project setup
+`npm install` ставит только Node-пакеты. Ниже — всё, что нужно поставить **дополнительно** в систему.
+Команды даны для **macOS (разработка)** и **Ubuntu/Debian (сервер/дроплет)**.
+
+### 1. Node.js 22+
 
 ```bash
-$ npm install
+node -v   # требуется >= 22
+# macOS:   brew install node
+# Ubuntu:  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
 ```
 
-## Compile and run the project
+### 2. Claude Code CLI + авторизация по подписке (обязательно)
+
+Бот вызывает бинарь `claude`. Его нет в зависимостях проекта — ставится отдельно.
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+# Установка (см. https://code.claude.com/docs). Например:
+npm install -g @anthropic-ai/claude-code
+claude --version            # проверка (тестировалось на v2.1.186)
 ```
 
-## Run tests
+**Авторизация:**
+
+- **Локально (mac):** один раз войти интерактивно (`claude`, вход через браузер) — токен ляжет в keychain,
+  в `.env` ничего добавлять не нужно.
+- **На сервере (headless, без браузера):**
+  ```bash
+  claude setup-token        # требует активную подписку Pro/Max
+  ```
+  Полученный токен прописать в `.env` как `CLAUDE_CODE_OAUTH_TOKEN`.
+
+> ⚠️ **Критично:** НЕ задавайте переменную `ANTHROPIC_API_KEY` в окружении — она имеет приоритет и
+> переключает биллинг на оплату по API. (Приложение само вычищает её из окружения подпроцесса,
+> но не держите её в shell/`.env`.) Проверить активный путь: `claude` → `/status`.
+
+### 3. Build-инструменты для `better-sqlite3` (нативный модуль)
+
+`better-sqlite3` ставится через npm, но это нативный аддон. Обычно подтягивается готовый prebuilt-бинарь;
+если на сервере он собирается из исходников — нужны компиляторы:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+# macOS:   xcode-select --install
+# Ubuntu:  sudo apt install -y build-essential python3
 ```
 
-## Deployment
+### 4. Голосовые сообщения — ffmpeg + whisper.cpp + модель (опционально, Фаза 9)
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Нужны только если включаете распознавание голоса (`WHISPER_ENABLED=true`). Иначе бот на голосовое
+ответит «не настроено», и эти шаги можно пропустить.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+**4.1. ffmpeg** (конвертация OGG/Opus → WAV 16k):
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# macOS:   brew install ffmpeg
+# Ubuntu:  sudo apt install -y ffmpeg
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**4.2. whisper.cpp** (локальный STT, собирается из исходников):
 
-## Resources
+```bash
+git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp
+cd /opt/whisper.cpp
+cmake -B build
+cmake --build build -j --config Release
+# бинарь появится в: /opt/whisper.cpp/build/bin/whisper-cli
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+**4.3. Модель** (для русского рекомендуется `medium`, квантизованная — экономит RAM):
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```bash
+cd /opt/whisper.cpp
+sh ./models/download-ggml-model.sh medium-q5_0
+# модель: /opt/whisper.cpp/models/ggml-medium-q5_0.bin
+```
 
-## Support
+> 💡 RAM моделей (рантайм): tiny ~273МБ · base ~388МБ · small ~852МБ · medium ~2.1ГБ.
+> whisper.cpp упирается в CPU — на 1 vCPU медленно. Рекомендуемый дроплет под голос: **≥ 4 GB / 2 vCPU**.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Затем в `.env`:
+```
+WHISPER_ENABLED=true
+WHISPER_BIN=/opt/whisper.cpp/build/bin/whisper-cli
+WHISPER_MODEL=/opt/whisper.cpp/models/ggml-medium-q5_0.bin
+```
 
-## Stay in touch
+### 5. Telegram-бот
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Создайте бота у [@BotFather](https://t.me/BotFather) (`/newbot`) → получите токен → в `.env`
+`TELEGRAM_BOT_TOKEN=...`. Свой Telegram ID узнаете, написав боту (он ответит отказом с вашим id) —
+впишите его в `TELEGRAM_ALLOWED_USER_IDS`.
 
-## License
+---
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## 🚀 Установка и запуск
+
+```bash
+npm install
+cp .env.example .env     # затем заполните токены (см. ниже)
+
+npm run start:dev        # разработка (watch)
+npm run start:prod       # прод (после npm run build)
+```
+
+## 🔧 Конфигурация (`.env`)
+
+Все переменные с описанием — в [`.env.example`](./.env.example). Минимум для запуска бота:
+
+| Переменная | Обязательна | Назначение |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | да (иначе бот выключен) | токен от BotFather |
+| `TELEGRAM_ALLOWED_USER_IDS` | да | разрешённые user id (csv) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | на сервере | токен подписки (`claude setup-token`) |
+| `CLAUDE_WORKSPACE` | реком. | рабочая папка для файлов claude |
+| `CLAUDE_PERMISSION_MODE` | реком. | `bypassPermissions` для headless-инструментов |
+| `WHISPER_*`, `FFMPEG_BIN` | для голоса | см. шаг 4 |
+
+## 🧪 Тесты
+
+```bash
+npm run test         # юнит-тесты
+npm run test:cov     # покрытие
+```
+
+---
+
+## 📦 Деплой на сервер (кратко)
+
+1. Поставить зависимости из разделов 1–4 выше (Node, claude CLI + `setup-token`, при нужде ffmpeg+whisper).
+2. `npm ci && npm run build`.
+3. Прописать `.env` (с `CLAUDE_CODE_OAUTH_TOKEN`, без `ANTHROPIC_API_KEY`).
+4. Завести systemd-юнит на `node dist/main` с автозапуском (план — отдельно).
+5. В первые дни сверять расход на дашбордах claude.ai / platform.claude.com (должна быть подписка, не API).
+</content>

@@ -5,14 +5,26 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Bot, Context } from 'grammy';
+import { randomUUID } from 'node:crypto';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Bot, Context, InlineKeyboard } from 'grammy';
+import { parseAsk } from '../claude/ask-protocol';
 import { ClaudeEvent } from '../claude/claude.types';
 import { ConversationService } from '../conversation/conversation.service';
 import { SessionService } from '../session/session.service';
-import { chunk, formatAge, progressLine, shortId } from './telegram-format.util';
+import { TranscriptionService } from '../voice/transcription.service';
+import {
+  canRenderRich,
+  chunk,
+  clampForEdit,
+  formatAge,
+  shortId,
+} from './telegram-format.util';
 
 /** Минимальный интервал между правками плейсхолдера, мс. */
-const PROGRESS_THROTTLE_MS = 1500;
+const PROGRESS_THROTTLE_MS = 1200;
 
 /**
  * Telegram-бот (grammY, long polling). Принимает сообщения, гоняет их через
@@ -24,11 +36,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(TelegramService.name);
   private bot?: Bot;
   private allowed = new Set<number>();
+  /** Токен бота — для скачивания файлов (getFile + download). */
+  private botToken = '';
+  /** Рендерить финал как rich-сообщение (нативные таблицы и пр.). */
+  private richEnabled = false;
+  /** Варианты ожидающего вопроса по chatId (один на чат; очередь сериализует ходы). */
+  private readonly pendingAsk = new Map<string, string[]>();
 
   constructor(
     private readonly config: ConfigService,
     private readonly conversation: ConversationService,
     private readonly sessions: SessionService,
+    private readonly transcription: TranscriptionService,
   ) {}
 
   onModuleInit(): void {
@@ -40,7 +59,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.allowed = this.parseAllowed(
       this.config.get<string>('TELEGRAM_ALLOWED_USER_IDS', ''),
     );
+    this.richEnabled =
+      this.config.get<string>('TELEGRAM_RICH', 'true') !== 'false';
 
+    this.botToken = token;
     const bot = new Bot(token);
     this.bot = bot;
 
@@ -50,6 +72,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     bot.command('sessions', (ctx) => this.onSessions(ctx));
     bot.command('resume', (ctx) => this.onResume(ctx));
     bot.on('message:text', (ctx) => this.onText(ctx));
+    bot.on('message:voice', (ctx) => this.onVoice(ctx));
+    bot.callbackQuery(/^ask:(\d+)$/, (ctx) => this.onAskChoice(ctx));
     bot.catch((err) => this.log.error(`bot error: ${err.message}`, err.stack));
 
     void bot
@@ -133,44 +157,214 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
   private async onText(ctx: Context): Promise<void> {
     const chatId = String(ctx.chat!.id);
-    const text = ctx.message!.text!;
+    this.pendingAsk.delete(chatId); // свободный ввод отменяет ожидающий вопрос
+    await this.processTurn(ctx, ctx.message!.text!);
+  }
+
+  /** Голосовое сообщение: скачать → распознать (whisper) → прогнать как обычный текст. */
+  private async onVoice(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat!.id);
+    this.pendingAsk.delete(chatId);
+
+    if (!this.transcription.enabled) {
+      await ctx.reply('🎤 Распознавание голоса не настроено.');
+      return;
+    }
 
     await ctx.replyWithChatAction('typing').catch(() => undefined);
-    const ph = await ctx.reply(progressLine());
+    const status = await ctx.reply('🎤 распознаю…');
+    let oggPath: string | undefined;
+    try {
+      oggPath = await this.downloadVoice(ctx);
+      const text = await this.transcription.transcribe(oggPath);
+      if (!text) {
+        await ctx.api
+          .editMessageText(ctx.chat!.id, status.message_id, '🎤 Не удалось распознать.')
+          .catch(() => undefined);
+        return;
+      }
+      await ctx.api
+        .editMessageText(ctx.chat!.id, status.message_id, `🎤 «${text}»`)
+        .catch(() => undefined);
+      await this.processTurn(ctx, text);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`voice failed for chat ${chatId}: ${msg}`);
+      await ctx.api
+        .editMessageText(ctx.chat!.id, status.message_id, `❌ Ошибка распознавания: ${msg}`)
+        .catch(() => undefined);
+    } finally {
+      if (oggPath) await rm(oggPath, { force: true }).catch(() => undefined);
+    }
+  }
 
+  /** Скачивает голосовой файл во временный .ogg, возвращает путь. */
+  private async downloadVoice(ctx: Context): Promise<string> {
+    const file = await ctx.getFile();
+    const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const path = join(tmpdir(), `aihub-${randomUUID()}.ogg`);
+    await writeFile(path, buf);
+    return path;
+  }
+
+  /** Нажата кнопка ответа на уточняющий вопрос. */
+  private async onAskChoice(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat!.id);
+    const options = this.pendingAsk.get(chatId);
+    const idx = Number((ctx.match as RegExpMatchArray)[1]);
+    const chosen = options?.[idx];
+    if (!chosen) {
+      await ctx.answerCallbackQuery('Вопрос устарел');
+      return;
+    }
+    this.pendingAsk.delete(chatId);
+    await ctx.answerCallbackQuery();
+    // убрать кнопки и пометить выбор (edit без reply_markup снимает клавиатуру)
+    await ctx.editMessageText(`✅ ${chosen}`).catch(() => undefined);
+    await this.processTurn(ctx, chosen);
+  }
+
+  /** Один ход: индикатор «печатает…» → стриминг текста → финал (текст или вопрос с кнопками). */
+  private async processTurn(ctx: Context, userText: string): Promise<void> {
+    const chatId = String(ctx.chat!.id);
+    const tgChatId = ctx.chat!.id;
+
+    // Нативный индикатор «печатает…». Telegram гасит его ~5с → обновляем каждые 4с,
+    // пока не пойдёт текст ответа.
+    const sendTyping = () =>
+      void ctx.api.sendChatAction(tgChatId, 'typing').catch(() => undefined);
+    sendTyping();
+    let typingTimer: NodeJS.Timeout | undefined = setInterval(sendTyping, 4000);
+    const stopTyping = () => {
+      if (typingTimer) {
+        clearInterval(typingTimer);
+        typingTimer = undefined;
+      }
+    };
+
+    // Сообщение с ответом создаётся на ПЕРВОМ токене (до этого виден индикатор).
+    let msgId: number | undefined;
+    let creating: Promise<void> | undefined;
+    let streamed = '';
+    let lastShown = '';
     let lastEdit = 0;
-    let lastStatus = '';
+
     const onEvent = (evt: ClaudeEvent): void => {
-      if (evt.type !== 'assistant') return;
-      const tool = evt.message.content.find((b) => b.type === 'tool_use');
-      if (!tool) return;
-      const status = progressLine(tool.name);
+      if (
+        evt.type !== 'stream_event' ||
+        evt.event.delta?.type !== 'text_delta' ||
+        !evt.event.delta.text
+      ) {
+        return;
+      }
+      streamed += evt.event.delta.text;
+      const clamped = clampForEdit(streamed);
+      if (!clamped) return;
       const now = Date.now();
-      if (status !== lastStatus && now - lastEdit > PROGRESS_THROTTLE_MS) {
+
+      if (msgId === undefined) {
+        if (creating) return; // сообщение уже создаётся — ждём
+        stopTyping();
+        lastShown = clamped;
         lastEdit = now;
-        lastStatus = status;
+        creating = ctx
+          .reply(clamped)
+          .then((m) => {
+            msgId = m.message_id;
+          })
+          .catch(() => undefined);
+        return;
+      }
+      if (clamped !== lastShown && now - lastEdit > PROGRESS_THROTTLE_MS) {
+        lastEdit = now;
+        lastShown = clamped;
         void ctx.api
-          .editMessageText(ctx.chat!.id, ph.message_id, status)
+          .editMessageText(tgChatId, msgId, clamped)
           .catch(() => undefined);
       }
     };
 
     try {
-      const result = await this.conversation.send(chatId, text, onEvent);
-      const body = (result.isError ? '⚠️ ' : '') + result.text;
-      const parts = chunk(body);
-      await ctx.api
-        .editMessageText(ctx.chat!.id, ph.message_id, parts[0])
-        .catch(() => undefined);
-      for (let i = 1; i < parts.length; i++) {
-        await ctx.reply(parts[i]);
+      const result = await this.conversation.send(chatId, userText, onEvent);
+      stopTyping();
+      await creating; // дождаться создания сообщения, если оно началось
+
+      if (result.isError) {
+        await this.renderFinal(ctx, tgChatId, msgId, '⚠️ ' + result.text);
+        return;
       }
+
+      const { text, ask } = parseAsk(result.text);
+      if (ask) {
+        this.pendingAsk.set(chatId, ask.options);
+        const kb = new InlineKeyboard();
+        ask.options.forEach((opt, i) => kb.text(opt, `ask:${i}`).row());
+        const body = (text ? text + '\n\n' : '') + '❓ ' + ask.question;
+        const shown = clampForEdit(body);
+        if (msgId !== undefined) {
+          await ctx.api
+            .editMessageText(tgChatId, msgId, shown, { reply_markup: kb })
+            .catch(() => undefined);
+        } else {
+          await ctx.reply(shown, { reply_markup: kb });
+        }
+        return;
+      }
+
+      await this.sendRichOrPlain(ctx, tgChatId, msgId, text);
     } catch (err) {
+      stopTyping();
+      await creating;
       const msg = err instanceof Error ? err.message : String(err);
       this.log.error(`turn failed for chat ${chatId}: ${msg}`);
+      await this.renderFinal(ctx, tgChatId, msgId, `❌ Ошибка: ${msg}`);
+    }
+  }
+
+  /** Финал нормального ответа: rich (нативные таблицы) с фолбэком на обычный текст. */
+  private async sendRichOrPlain(
+    ctx: Context,
+    tgChatId: number,
+    msgId: number | undefined,
+    body: string,
+  ): Promise<void> {
+    if (canRenderRich(body, this.richEnabled)) {
+      try {
+        if (msgId !== undefined) {
+          await ctx.api.editMessageText(tgChatId, msgId, { markdown: body });
+        } else {
+          await ctx.replyWithRichMessage({ markdown: body });
+        }
+        return;
+      } catch (e) {
+        this.log.warn(
+          `rich render failed, fallback to plain: ${(e as Error).message}`,
+        );
+      }
+    }
+    await this.renderFinal(ctx, tgChatId, msgId, body);
+  }
+
+  /** Выводит финальный текст: правит плейсхолдер (если был стриминг) + чанкинг. */
+  private async renderFinal(
+    ctx: Context,
+    tgChatId: number,
+    msgId: number | undefined,
+    body: string,
+  ): Promise<void> {
+    const parts = chunk(body);
+    if (msgId !== undefined) {
       await ctx.api
-        .editMessageText(ctx.chat!.id, ph.message_id, `❌ Ошибка: ${msg}`)
+        .editMessageText(tgChatId, msgId, parts[0])
         .catch(() => undefined);
+    } else {
+      await ctx.reply(parts[0]);
+    }
+    for (let i = 1; i < parts.length; i++) {
+      await ctx.reply(parts[i]);
     }
   }
 

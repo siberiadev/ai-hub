@@ -1,7 +1,10 @@
 import {
+  canRenderRich,
   chunk,
+  clampForEdit,
   formatAge,
   progressLine,
+  RICH_MAX_LEN,
   shortId,
   TELEGRAM_MAX_LEN,
 } from './telegram-format.util';
@@ -67,5 +70,32 @@ describe('telegram-format.util', () => {
   it('progressLine', () => {
     expect(progressLine('Read')).toBe('🔧 Read…');
     expect(progressLine()).toBe('🤔 думаю…');
+  });
+
+  describe('clampForEdit', () => {
+    it('короткий текст не трогает', () => {
+      expect(clampForEdit('hi')).toBe('hi');
+    });
+    it('длинный усекает с многоточием в пределах лимита', () => {
+      const s = 'a'.repeat(TELEGRAM_MAX_LEN + 50);
+      const out = clampForEdit(s);
+      expect(out.length).toBe(TELEGRAM_MAX_LEN);
+      expect(out.endsWith('…')).toBe(true);
+    });
+  });
+
+  describe('canRenderRich', () => {
+    it('флаг выключен → false', () => {
+      expect(canRenderRich('| a | b |', false)).toBe(false);
+    });
+    it('пустой текст → false', () => {
+      expect(canRenderRich('   ', true)).toBe(false);
+    });
+    it('длиннее лимита rich → false', () => {
+      expect(canRenderRich('a'.repeat(RICH_MAX_LEN + 1), true)).toBe(false);
+    });
+    it('нормальный текст при включённом флаге → true', () => {
+      expect(canRenderRich('| a | b |\n|---|---|', true)).toBe(true);
+    });
   });
 });

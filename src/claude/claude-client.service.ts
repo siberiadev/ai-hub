@@ -1,77 +1,147 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'node:child_process';
 import * as readline from 'node:readline';
 import { Observable, Subject } from 'rxjs';
+import { ClaudeSession } from './claude-session';
+import {
+  buildArgs,
+  buildEnv,
+  readSpawnConfig,
+} from './claude-spawn.util';
 import { ClaudeEvent, RunOptions, RunResult } from './claude.types';
 
+const EVICT_INTERVAL_MS = 60_000;
+
 /**
- * Низкоуровневая обёртка над `claude` CLI.
+ * Запуск `claude` CLI в одном из двух режимов (флаг `CLAUDE_PERSISTENT`):
+ *  - persistent (по умолчанию): пул постоянных процессов `ClaudeSession`, по одному
+ *    на сессию — холодный старт платится один раз, дальше ход ≈ только инференс;
+ *  - one-shot (fallback): новый процесс на каждый ход (как до Фазы 6).
  *
- * Запускает один ход в headless-режиме (`-p`), парсит построчный `stream-json`
- * из stdout и отдаёт наружу:
- *   - events$ — поток событий (assistant-текст, tool_use, tool_result, …);
- *   - done    — промис с финальным результатом хода.
- *
- * Сессии/очередь/Telegram реализуются поверх этого сервиса в следующих фазах.
+ * Публичный API `run()` одинаков для обоих режимов → верхние слои не зависят от режима.
  */
 @Injectable()
-export class ClaudeClientService {
+export class ClaudeClientService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(ClaudeClientService.name);
+  private readonly sessions = new Map<string, ClaudeSession>();
+  private evictTimer?: NodeJS.Timeout;
 
   constructor(private readonly config: ConfigService) {}
+
+  onModuleInit(): void {
+    if (this.isPersistent()) {
+      this.evictTimer = setInterval(
+        () => this.evictIdle(),
+        EVICT_INTERVAL_MS,
+      );
+      this.evictTimer.unref?.();
+      this.log.log('persistent режим: пул постоянных процессов активен');
+    }
+  }
+
+  onModuleDestroy(): void {
+    if (this.evictTimer) clearInterval(this.evictTimer);
+    for (const s of this.sessions.values()) s.kill();
+    this.sessions.clear();
+  }
 
   /** Удобный хелпер, когда поток событий не нужен — только итог. */
   runToResult(opts: RunOptions): Promise<RunResult> {
     return this.run(opts).done;
   }
 
-  /**
-   * Запускает один ход `claude`.
-   * @returns events$ (горячий поток событий) и done (Promise с RunResult).
-   */
+  /** Запускает один ход. Маршрутизирует в persistent-пул или one-shot по флагу. */
   run(opts: RunOptions): {
     events$: Observable<ClaudeEvent>;
     done: Promise<RunResult>;
   } {
+    return this.isPersistent()
+      ? this.runPersistent(opts)
+      : this.runOneShot(opts);
+  }
+
+  private isPersistent(): boolean {
+    return this.config.get<string>('CLAUDE_PERSISTENT', 'true') !== 'false';
+  }
+
+  // --- persistent: пул постоянных процессов ---
+
+  private runPersistent(opts: RunOptions): {
+    events$: Observable<ClaudeEvent>;
+    done: Promise<RunResult>;
+  } {
+    const live = this.sessions.get(opts.sessionId);
+    if (live && live.alive) {
+      return live.send(opts.message);
+    }
+
+    const cfg = readSpawnConfig(this.config, opts.cwd);
+    const maxProcs = Number(this.config.get<string>('CLAUDE_MAX_PROCS', '3'));
+    if (this.sessions.size >= maxProcs) this.evictLru();
+
+    const session = new ClaudeSession(cfg, opts.sessionId, opts.resume, (s) => {
+      if (this.sessions.get(s.sessionId) === s) {
+        this.sessions.delete(s.sessionId);
+      }
+    });
+    this.sessions.set(opts.sessionId, session);
+    return session.send(opts.message);
+  }
+
+  /** Выселяет самую давно не использованную НЕ занятую сессию. */
+  private evictLru(): void {
+    let oldest: ClaudeSession | undefined;
+    for (const s of this.sessions.values()) {
+      if (s.busy) continue;
+      if (!oldest || s.lastUsedAt < oldest.lastUsedAt) oldest = s;
+    }
+    if (oldest) {
+      this.log.debug(`evict LRU session ${oldest.sessionId}`);
+      oldest.kill();
+      this.sessions.delete(oldest.sessionId);
+    }
+  }
+
+  /** Периодическое выселение простаивающих сессий. */
+  private evictIdle(): void {
+    const ttl = Number(this.config.get<string>('CLAUDE_IDLE_TTL_MS', '300000'));
+    const now = Date.now();
+    for (const s of [...this.sessions.values()]) {
+      if (!s.busy && now - s.lastUsedAt > ttl) {
+        this.log.debug(`evict idle session ${s.sessionId}`);
+        s.kill();
+        this.sessions.delete(s.sessionId);
+      }
+    }
+  }
+
+  // --- one-shot: процесс на каждый ход (fallback) ---
+
+  private runOneShot(opts: RunOptions): {
+    events$: Observable<ClaudeEvent>;
+    done: Promise<RunResult>;
+  } {
     const subject = new Subject<ClaudeEvent>();
-
-    const bin = this.config.get<string>('CLAUDE_BIN', 'claude');
-    const cwd =
-      opts.cwd ?? this.config.get<string>('CLAUDE_WORKSPACE', process.cwd());
-    const permissionMode = this.config.get<string>(
-      'CLAUDE_PERMISSION_MODE',
-      'default',
-    );
-    const timeoutMs = Number(
-      this.config.get<string>('CLAUDE_TIMEOUT_MS', '120000'),
-    );
-
-    const args = [
-      '-p',
-      opts.resume ? '--resume' : '--session-id',
-      opts.sessionId,
-      '--output-format',
-      'stream-json',
-      '--verbose',
-      '--permission-mode',
-      permissionMode,
-    ];
-
-    // Окружение дочернего процесса: убираем API-ключ, чтобы не уйти в оплату по
-    // токенам (он имеет приоритет над OAuth). CLAUDE_CODE_OAUTH_TOKEN, если есть
-    // в окружении, пробрасывается как есть (на сервере — из systemd; локально на
-    // mac не нужен — claude берёт OAuth из keychain).
-    const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY;
+    const cfg = readSpawnConfig(this.config, opts.cwd);
+    const args = buildArgs(cfg, {
+      sessionId: opts.sessionId,
+      resume: opts.resume,
+      persistent: false,
+    });
 
     this.log.debug(
-      `spawn ${bin} ${args.join(' ')} (cwd=${cwd}, timeout=${timeoutMs}ms)`,
+      `spawn ${cfg.bin} ${args.join(' ')} (cwd=${cfg.cwd}, timeout=${cfg.timeoutMs}ms)`,
     );
 
-    const child = spawn(bin, args, {
-      cwd,
-      env,
+    const child = spawn(cfg.bin, args, {
+      cwd: cfg.cwd,
+      env: buildEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -81,9 +151,9 @@ export class ClaudeClientService {
       let settled = false;
 
       const timer = setTimeout(() => {
-        this.log.warn(`claude timed out after ${timeoutMs}ms, killing`);
+        this.log.warn(`claude timed out after ${cfg.timeoutMs}ms, killing`);
         child.kill('SIGTERM');
-      }, timeoutMs);
+      }, cfg.timeoutMs);
 
       const onAbort = () => {
         this.log.warn('run aborted, killing claude');
@@ -96,15 +166,12 @@ export class ClaudeClientService {
         opts.signal?.removeEventListener('abort', onAbort);
       };
 
-      // stdin: пишем сообщение и закрываем поток. Гасим EPIPE, если процесс
-      // умер раньше, чем мы успели записать.
       child.stdin.on('error', (err) =>
         this.log.warn(`stdin error: ${(err as Error).message}`),
       );
       child.stdin.write(opts.message);
       child.stdin.end();
 
-      // stdout: одна строка = один JSON-объект.
       const rl = readline.createInterface({ input: child.stdout });
       rl.on('line', (line) => {
         const trimmed = line.trim();
@@ -124,6 +191,11 @@ export class ClaudeClientService {
             costUsd: evt.total_cost_usd,
             isError: evt.is_error,
           };
+          if (!settled) {
+            settled = true;
+            cleanup();
+            resolve(final);
+          }
         }
       });
 
@@ -132,21 +204,19 @@ export class ClaudeClientService {
       });
 
       child.on('error', (err) => {
-        if (settled) return;
-        settled = true;
         cleanup();
-        subject.error(err);
-        reject(err);
+        if (!subject.closed) subject.error(err);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
       });
 
       child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
         cleanup();
-        subject.complete();
-        if (final) {
-          resolve(final);
-        } else {
+        if (!subject.closed) subject.complete();
+        if (!settled) {
+          settled = true;
           reject(
             new Error(
               `claude exited ${code} without a result event. stderr: ${stderr

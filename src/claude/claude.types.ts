@@ -47,12 +47,27 @@ export interface ClaudeResultEvent {
   is_error: boolean;
 }
 
+/**
+ * Частичное событие генерации (только с `--include-partial-messages`).
+ * Для стриминга текста интересен `event.delta.type === 'text_delta'` → `event.delta.text`.
+ */
+export interface ClaudeStreamEvent {
+  type: 'stream_event';
+  event: {
+    type: string;
+    delta?: { type: string; text?: string };
+    [key: string]: unknown;
+  };
+  session_id: string;
+}
+
 /** Любое известное событие потока. */
 export type ClaudeEvent =
   | ClaudeInitEvent
   | ClaudeAssistantEvent
   | ClaudeUserEvent
-  | ClaudeResultEvent;
+  | ClaudeResultEvent
+  | ClaudeStreamEvent;
 
 /** Параметры одного хода. */
 export interface RunOptions {

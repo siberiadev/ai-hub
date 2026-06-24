@@ -16,9 +16,17 @@ class FakeChild extends EventEmitter {
   kill = jest.fn();
 }
 
-function makeService(): ClaudeClientService {
+function makeService(
+  overrides: Record<string, string> = {},
+): ClaudeClientService {
+  // one-shot тесты по умолчанию (persistent-пул проверяется отдельным describe)
+  const merged: Record<string, string> = {
+    CLAUDE_PERSISTENT: 'false',
+    ...overrides,
+  };
   const config = {
-    get: (_key: string, def?: unknown) => def,
+    get: (key: string, def?: unknown) =>
+      key in merged ? merged[key] : def,
   } as unknown as ConfigService;
   return new ClaudeClientService(config);
 }
@@ -127,9 +135,11 @@ describe('ClaudeClientService', () => {
         '--output-format',
         'stream-json',
         '--verbose',
+        '--include-partial-messages',
       ]),
     );
     expect(args).not.toContain('--resume');
+    expect(args).not.toContain('--strict-mcp-config');
     expect(opts.env.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
@@ -159,5 +169,136 @@ describe('ClaudeClientService', () => {
     child.stdout.end();
 
     await expect(done).rejects.toThrow(/exited 1 without a result/);
+  });
+
+  it('резолвит по событию result, не дожидаясь close', async () => {
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const service = makeService();
+
+    const { done } = service.run({ message: 'hi', sessionId: 'uuid-5', resume: false });
+    // пишем только result-строку, close НЕ эмитим
+    child.stdout.write(JSON.stringify(resultLine({ session_id: 'uuid-5' })) + '\n');
+
+    await expect(done).resolves.toMatchObject({ text: 'pong', isError: false });
+  });
+
+  it('CLAUDE_STRICT_MCP=true добавляет --strict-mcp-config и --mcp-config', async () => {
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const service = makeService({
+      CLAUDE_STRICT_MCP: 'true',
+      CLAUDE_MCP_CONFIG: '/tmp/mcp.json',
+    });
+
+    const { done } = service.run({ message: 'hi', sessionId: 'uuid-6', resume: false });
+    child.stdout.write(JSON.stringify(resultLine({ session_id: 'uuid-6' })) + '\n');
+    await done;
+
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args).toContain('--strict-mcp-config');
+    expect(args).toContain('--mcp-config');
+    expect(args).toContain('/tmp/mcp.json');
+    expect(args).not.toContain('--input-format'); // one-shot не персистентный
+  });
+});
+
+describe('ClaudeClientService (persistent pool)', () => {
+  let children: FakeChild[];
+
+  beforeEach(() => {
+    spawnMock.mockReset();
+    children = [];
+    spawnMock.mockImplementation(() => {
+      const c = new FakeChild();
+      children.push(c);
+      return c;
+    });
+  });
+
+  function poolService(overrides: Record<string, string> = {}): ClaudeClientService {
+    const merged: Record<string, string> = {
+      CLAUDE_PERSISTENT: 'true',
+      CLAUDE_MAX_PROCS: '2',
+      ...overrides,
+    };
+    const config = {
+      get: (key: string, def?: unknown) =>
+        key in merged ? merged[key] : def,
+    } as unknown as ConfigService;
+    return new ClaudeClientService(config);
+  }
+
+  /** Завершает текущий ход указанного процесса, отдав result. */
+  function completeTurn(child: FakeChild, result = 'ok', sessionId = 's'): void {
+    child.stdout.write(
+      JSON.stringify(resultLine({ result, session_id: sessionId })) + '\n',
+    );
+  }
+
+  it('persistent режим добавляет --input-format stream-json', async () => {
+    const svc = poolService();
+    const r = svc.run({ message: 'a', sessionId: 's1', resume: false });
+    completeTurn(children[0], 'one', 's1');
+    await r.done;
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args).toEqual(
+      expect.arrayContaining(['--input-format', 'stream-json', '--session-id', 's1']),
+    );
+  });
+
+  it('повтор по тому же sessionId переиспользует процесс (spawn 1 раз)', async () => {
+    const svc = poolService();
+    const r1 = svc.run({ message: 'a', sessionId: 's1', resume: false });
+    completeTurn(children[0], 'one', 's1');
+    await r1.done;
+
+    const r2 = svc.run({ message: 'b', sessionId: 's1', resume: true });
+    completeTurn(children[0], 'two', 's1');
+    await expect(r2.done).resolves.toMatchObject({ text: 'two' });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('разные sessionId → разные процессы', async () => {
+    const svc = poolService();
+    const r1 = svc.run({ message: 'a', sessionId: 's1', resume: false });
+    completeTurn(children[0], 'one', 's1');
+    await r1.done;
+
+    const r2 = svc.run({ message: 'b', sessionId: 's2', resume: false });
+    completeTurn(children[1], 'two', 's2');
+    await r2.done;
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('LRU-выселение при превышении CLAUDE_MAX_PROCS', async () => {
+    const svc = poolService({ CLAUDE_MAX_PROCS: '1' });
+    const r1 = svc.run({ message: 'a', sessionId: 's1', resume: false });
+    completeTurn(children[0], 'one', 's1');
+    await r1.done;
+
+    const r2 = svc.run({ message: 'b', sessionId: 's2', resume: false });
+    completeTurn(children[1], 'two', 's2');
+    await r2.done;
+
+    expect(children[0].kill).toHaveBeenCalled(); // старая сессия выселена
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('смерть процесса удаляет сессию из пула → следующий ход респавнит', async () => {
+    const svc = poolService();
+    const r1 = svc.run({ message: 'a', sessionId: 's1', resume: false });
+    completeTurn(children[0], 'one', 's1');
+    await r1.done;
+
+    children[0].emit('close', 1); // процесс умер
+
+    const r2 = svc.run({ message: 'b', sessionId: 's1', resume: true });
+    completeTurn(children[1], 'two', 's1');
+    await expect(r2.done).resolves.toMatchObject({ text: 'two' });
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 });
