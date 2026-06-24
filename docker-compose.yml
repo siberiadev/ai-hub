@@ -1,7 +1,0 @@
-services:
-  assistant:
-    build: .
-    restart: always
-    env_file: .env
-    volumes:
-      - ./workspace:/app/workspace
