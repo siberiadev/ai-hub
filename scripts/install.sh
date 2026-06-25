@@ -112,6 +112,17 @@ ask() {
   fi
   set_env "$key" "${val:-$cur}"
 }
+# Секретный ввод: не печатает значение и не показывает текущее (только факт, что оно задано).
+ask_secret() {
+  local key="$1" desc="$2" cur val=""
+  cur="$(get_env "$key")"
+  local hint="не задано"; [ -n "$cur" ] && hint="задано, Enter — оставить"
+  if [ -r /dev/tty ]; then
+    read -rsp "    ${key} — ${desc} (${hint}): " val </dev/tty || true
+    echo
+  fi
+  set_env "$key" "${val:-$cur}"
+}
 
 # --- 7. .env + интерактивный мастер ---
 fresh=0
@@ -129,13 +140,23 @@ fi
 
 if [ "$run_wizard" -eq 1 ] && [ -r /dev/tty ]; then
   log "Конфигурация .env (Enter — оставить значение в скобках)"
-  ask TELEGRAM_BOT_TOKEN        "токен бота от @BotFather"
-  ask TELEGRAM_ALLOWED_USER_IDS "твой Telegram id (можно пусто; узнать — напиши боту)"
-  ask CLAUDE_PERMISSION_MODE    "режим разрешений claude" "bypassPermissions"
-  ask CLAUDE_WORKSPACE          "рабочая папка claude" "$APP_DIR/workspace"
+  ask_secret TELEGRAM_BOT_TOKEN  "токен бота от @BotFather"
+  ask TELEGRAM_ALLOWED_USER_IDS  "твой Telegram id (можно пусто; узнать — напиши боту)"
+  echo
+  warn "ВНИМАНИЕ про режим разрешений:"
+  echo  "    'bypassPermissions' = Claude выполняет ЛЮБЫЕ команды/правки БЕЗ подтверждения."
+  echo  "    Любой из TELEGRAM_ALLOWED_USER_IDS получает фактически шелл на этом сервере."
+  echo  "    Держи allowlist минимальным и токен в секрете. Безопаснее: 'default' или 'acceptEdits'"
+  echo  "    (но тогда Claude не сможет сам пользоваться инструментами в headless-режиме)."
+  ask CLAUDE_PERMISSION_MODE     "режим разрешений claude" "bypassPermissions"
+  ask CLAUDE_WORKSPACE           "рабочая папка claude" "$APP_DIR/workspace"
+  ask CLAUDE_TIMEOUT_MS          "таймаут одного хода, мс (для кодовых задач больше)" "600000"
 elif [ "$run_wizard" -eq 1 ]; then
   warn "Нет терминала для мастера — заполни $ENV_FILE вручную (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_IDS)."
 fi
+
+# .env содержит токен — закрываем права
+chmod 600 "$ENV_FILE" 2>/dev/null || true
 
 # голос: пути подставляем автоматически
 if [ "$WITH_VOICE" -eq 1 ]; then

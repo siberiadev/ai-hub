@@ -21,7 +21,7 @@ export function readSpawnConfig(
     bin: config.get<string>('CLAUDE_BIN', 'claude'),
     cwd: cwdOverride ?? config.get<string>('CLAUDE_WORKSPACE', process.cwd()),
     permissionMode: config.get<string>('CLAUDE_PERMISSION_MODE', 'default'),
-    timeoutMs: Number(config.get<string>('CLAUDE_TIMEOUT_MS', '120000')),
+    timeoutMs: Number(config.get<string>('CLAUDE_TIMEOUT_MS', '600000')),
     strictMcp: config.get<string>('CLAUDE_STRICT_MCP', 'false') === 'true',
     mcpConfig: config.get<string>('CLAUDE_MCP_CONFIG', ''),
     askEnabled: config.get<string>('CLAUDE_ASK_ENABLED', 'true') !== 'false',
