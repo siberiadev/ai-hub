@@ -138,10 +138,14 @@ curl -i https://<host>/whoop/   # маршрут есть; конкретные 
 **Периметр не меняется:** ufw остаётся `OpenSSH only`, приложение слушает `127.0.0.1`, входящие порты
 не открыты — туннель работает на исходящем соединении.
 
-## Доступ Claude к данным WHOOP (MCP `whoop:read`)
+## Доступ Claude к данным WHOOP (MCP `whoop`)
 
-Чтобы Claude в боте мог читать данные WHOOP, поднимаем MCP-сервер `whoop` (тула `read`, **только
-чтение** из Postgres). Сервер — отдельный stdio-процесс, claude запускает его сам.
+Чтобы Claude в боте мог читать данные WHOOP, поднимаем MCP-сервер `whoop`. Сервер — отдельный
+stdio-процесс, claude запускает его сам. Тулы:
+- `read` — **только чтение** из Postgres (тренировки/сон/восстановление/циклы/сводка/тренды).
+- `backfill` — запускает историческую загрузку из WHOOP API. Сам MCP остаётся read-only: тула шлёт
+  `POST /whoop/admin/backfill` на **основное приложение** (там есть токены и write-БД), которое грузит
+  данные в фоне. Эндпоинт защищён `?key=<WHOOP_CONNECT_SECRET>` (неверный ключ → 404).
 
 1. **Read-only роль в Postgres** (минимум прав для MCP):
    ```sql
@@ -152,7 +156,9 @@ curl -i https://<host>/whoop/   # маршрут есть; конкретные 
    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO whoop_ro;
    ```
 2. **Конфиг MCP**: скопировать `.mcp.json.example` → `~/ai-hub/.mcp.json`, подставить абсолютный путь к
-   `dist/whoop/mcp/whoop-mcp.server.js` и строку read-only роли в `WHOOP_MCP_DATABASE_URL`.
+   `dist/whoop/mcp/whoop-mcp.server.js` и строку read-only роли в `WHOOP_MCP_DATABASE_URL`. Для тулы
+   `backfill` задать `WHOOP_APP_URL` (адрес приложения, по умолчанию `http://127.0.0.1:3000`) и
+   `WHOOP_ADMIN_SECRET` (= значение `WHOOP_CONNECT_SECRET` из `.env`).
 3. **Подключить к claude** (headless — детерминированно): в `.env`
    ```
    CLAUDE_STRICT_MCP=true
@@ -161,7 +167,8 @@ curl -i https://<host>/whoop/   # маршрут есть; конкретные 
    Грузится ровно этот набор MCP (другие свои серверы добавь в тот же файл). Пересобрать и
    перезапустить: `npm run build && sudo systemctl restart ai-hub`.
 4. Проверка: спросить бота «покажи мои последние тренировки WHOOP» — Claude вызовет `mcp__whoop__read`.
-   (Данные появятся после OAuth-подключения и `npm run whoop:backfill`.)
+   (Данные появятся после OAuth-подключения и бэкфилла.) Бэкфилл можно запустить из бота («запусти
+   backfill WHOOP» → `mcp__whoop__backfill`) или с сервера `npm run whoop:backfill`.
 
 ## Заметки
 

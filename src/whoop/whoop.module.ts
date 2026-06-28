@@ -1,6 +1,7 @@
 import { DynamicModule, Logger, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TelegramModule } from '../telegram/telegram.module';
+import { WhoopAdminController } from './admin/whoop-admin.controller';
 import { WhoopAdminService } from './admin/whoop-admin.service';
 import { WhoopMonitorService } from './admin/whoop-monitor.service';
 import { WhoopAccount } from './entities/whoop-account.entity';
@@ -54,7 +55,11 @@ export class WhoopModule {
         ]),
         TelegramModule, // для NOTIFIER (алерты владельцу из WhoopMonitorService)
       ],
-      controllers: [WhoopOAuthController, WhoopWebhookController],
+      controllers: [
+        WhoopOAuthController,
+        WhoopWebhookController,
+        WhoopAdminController,
+      ],
       providers: [
         WhoopOAuthService,
         WhoopTokenService,

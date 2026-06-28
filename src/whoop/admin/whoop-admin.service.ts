@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { WhoopAccount } from '../entities/whoop-account.entity';
@@ -7,6 +7,7 @@ import { WhoopRecovery } from '../entities/whoop-recovery.entity';
 import { WhoopSleep } from '../entities/whoop-sleep.entity';
 import { WhoopWebhookEvent } from '../entities/whoop-webhook-event.entity';
 import { WhoopWorkout } from '../entities/whoop-workout.entity';
+import { sinceToIso, WhoopBackfill } from '../sync/whoop-backfill';
 
 export interface WhoopStatus {
   account: {
@@ -20,9 +21,20 @@ export interface WhoopStatus {
   lastProcessedAt: Date | null;
 }
 
-/** Операционные операции над данными WHOOP: статус пайплайна и возврат failed-событий. */
+/** Результат попытки запустить бэкфилл (fire-and-forget). */
+export interface BackfillStart {
+  started: boolean;
+  since: string;
+  alreadyRunning?: boolean;
+}
+
+/** Операционные операции над данными WHOOP: статус пайплайна, возврат failed-событий, бэкфилл. */
 @Injectable()
 export class WhoopAdminService {
+  private readonly log = new Logger(WhoopAdminService.name);
+  /** In-memory guard: приложение — один процесс, второй бэкфилл параллельно не нужен. */
+  private backfillRunning = false;
+
   constructor(
     @InjectRepository(WhoopAccount)
     private readonly accounts: Repository<WhoopAccount>,
@@ -36,7 +48,30 @@ export class WhoopAdminService {
     private readonly recoveries: Repository<WhoopRecovery>,
     @InjectRepository(WhoopCycle)
     private readonly cycles: Repository<WhoopCycle>,
+    private readonly backfill: WhoopBackfill,
   ) {}
+
+  /**
+   * Запускает историческую загрузку в фоне (не ждём завершения — оно долгое).
+   * Повторный вызов во время работы → `alreadyRunning`. `since` — `YYYY-MM-DD`/ISO; пусто → вся история.
+   */
+  startBackfill(since?: string): BackfillStart {
+    const iso = sinceToIso(since);
+    if (this.backfillRunning) {
+      return { started: false, since: iso, alreadyRunning: true };
+    }
+    this.backfillRunning = true;
+    this.backfill
+      .run(iso)
+      .then(() => this.log.log(`backfill завершён (since=${iso})`))
+      .catch((err) =>
+        this.log.error(`backfill упал: ${(err as Error).message}`),
+      )
+      .finally(() => {
+        this.backfillRunning = false;
+      });
+    return { started: true, since: iso };
+  }
 
   async status(): Promise<WhoopStatus> {
     const [account] = await this.accounts.find({

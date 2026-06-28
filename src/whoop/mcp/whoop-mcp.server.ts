@@ -55,6 +55,44 @@ const INPUT_SCHEMA = {
   required: ['type'],
 } as const;
 
+const BACKFILL_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    since: {
+      type: 'string',
+      description:
+        'С какой даты грузить историю (YYYY-MM-DD или ISO 8601). Без неё — вся доступная история.',
+    },
+  },
+} as const;
+
+/**
+ * Триггерит бэкфилл на основном приложении (там есть WHOOP-токены и write-БД; сам MCP read-only).
+ * Возвращается сразу — загрузка идёт в фоне. URL/секрет берём из env MCP-сервера.
+ */
+async function triggerBackfill(since?: string): Promise<string> {
+  const base = (process.env.WHOOP_APP_URL || 'http://127.0.0.1:3000').replace(
+    /\/+$/,
+    '',
+  );
+  const secret = (process.env.WHOOP_ADMIN_SECRET || '').trim();
+  if (!secret) {
+    throw new Error(
+      'WHOOP_ADMIN_SECRET не задан в env MCP-сервера — нечем авторизовать запуск бэкфилла.',
+    );
+  }
+  const url = new URL(`${base}/whoop/admin/backfill`);
+  url.searchParams.set('key', secret);
+  if (since) url.searchParams.set('since', since);
+
+  const res = await fetch(url, { method: 'POST' });
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`приложение ответило ${res.status}: ${body || '(пусто)'}`);
+  }
+  return body;
+}
+
 function databaseUrl(): string {
   const raw = (
     process.env.WHOOP_MCP_DATABASE_URL ||
@@ -103,10 +141,37 @@ async function main(): Promise<void> {
           'Только чтение. Время — UTC. Пустой массив = данных за период нет.',
         inputSchema: INPUT_SCHEMA,
       },
+      {
+        name: 'backfill',
+        description:
+          'Запускает историческую загрузку данных из WHOOP API в БД (тренировки, сон, восстановление, ' +
+          'циклы). Идемпотентно (upsert). Возвращается сразу — загрузка идёт в фоне; результат смотри ' +
+          'позже через read summary. Повторный запуск во время работы вернёт alreadyRunning.',
+        inputSchema: BACKFILL_INPUT_SCHEMA,
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (req.params.name === 'backfill') {
+      const since = (req.params.arguments as { since?: string } | undefined)
+        ?.since;
+      try {
+        const text = await triggerBackfill(since);
+        return { content: [{ type: 'text', text }] };
+      } catch (err) {
+        console.error('backfill error:', err);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Не удалось запустить бэкфилл: ${(err as Error).message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     if (req.params.name !== 'read') {
       return {
         content: [{ type: 'text', text: `Неизвестная тула: ${req.params.name}` }],

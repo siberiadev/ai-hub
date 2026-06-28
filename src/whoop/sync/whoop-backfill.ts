@@ -11,6 +11,13 @@ import { mapCycle, mapRecovery, mapSleep, mapWorkout } from './whoop-mappers';
 /** Дефолт «вся история» — раньше любого членства WHOOP. */
 export const BACKFILL_ALL_SINCE = '2000-01-01T00:00:00.000Z';
 
+/** Нормализует дату начала бэкфилла в ISO; пусто/невалидно → вся история. */
+export function sinceToIso(raw?: string): string {
+  if (!raw) return BACKFILL_ALL_SINCE;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? BACKFILL_ALL_SINCE : d.toISOString();
+}
+
 /** Одноразовая историческая загрузка из WHOOP API (идемпотентна — upsert по PK). */
 @Injectable()
 export class WhoopBackfill {

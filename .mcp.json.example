@@ -5,7 +5,9 @@
       "args": ["/home/<user>/ai-hub/dist/whoop/mcp/whoop-mcp.server.js"],
       "env": {
         "WHOOP_MCP_DATABASE_URL": "postgres://readonly:PASSWORD@host:25060/defaultdb",
-        "DATABASE_SSL": "true"
+        "DATABASE_SSL": "true",
+        "WHOOP_APP_URL": "http://127.0.0.1:3000",
+        "WHOOP_ADMIN_SECRET": "<= WHOOP_CONNECT_SECRET из .env основного приложения>"
       }
     }
   }
