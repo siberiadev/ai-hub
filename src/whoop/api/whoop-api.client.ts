@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WhoopTokenService } from '../oauth/whoop-token.service';
+import { WHOOP_API_BASE } from '../whoop.constants';
 import type {
   WhoopCycleDto,
   WhoopPage,
@@ -9,7 +10,6 @@ import type {
   WhoopWorkoutDto,
 } from './whoop-api.types';
 
-const DEFAULT_API_BASE = 'https://api.prod.whoop.com/developer';
 const PAGE_LIMIT = 25; // максимум на страницу у WHOOP
 const MAX_RETRIES = 4; // на 429/5xx
 const BACKOFF_BASE_MS = 500;
@@ -103,17 +103,13 @@ export class WhoopApiClient {
     return out;
   }
 
-  private base(): string {
-    return this.config.get<string>('WHOOP_API_BASE', DEFAULT_API_BASE);
-  }
-
   private async fetchWithRetry(
     path: string,
     token: string,
     attempt = 0,
   ): Promise<Response> {
     await this.throttle();
-    const res = await fetch(`${this.base()}${path}`, {
+    const res = await fetch(`${WHOOP_API_BASE}${path}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 401) return res; // обрабатывает get() (refresh+повтор)

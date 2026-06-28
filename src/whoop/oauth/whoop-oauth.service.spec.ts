@@ -2,14 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { OAuthStateStore } from './oauth-state.store';
 import { WhoopOAuthService } from './whoop-oauth.service';
 import { WhoopTokenService } from './whoop-token.service';
+import { WHOOP_API_BASE, WHOOP_AUTH_URL } from '../whoop.constants';
 
 function makeConfig(): ConfigService {
   const vals: Record<string, string> = {
     WHOOP_CLIENT_ID: 'cid',
     WHOOP_REDIRECT_URI: 'https://app/cb',
-    WHOOP_AUTH_URL: 'https://whoop/auth',
-    WHOOP_API_BASE: 'https://whoop/api',
-    WHOOP_SCOPES: 'offline read:profile',
   };
   return {
     get: (k: string, d?: string) => vals[k] ?? d,
@@ -31,7 +29,7 @@ describe('WhoopOAuthService', () => {
     const store = new OAuthStateStore();
     const svc = new WhoopOAuthService(makeConfig(), {} as WhoopTokenService, store);
     const { url } = svc.buildAuthorizeUrl();
-    expect(url).toContain('https://whoop/auth?');
+    expect(url).toContain(`${WHOOP_AUTH_URL}?`);
     expect(url).toContain('response_type=code');
     expect(url).toContain('client_id=cid');
     expect(url).toContain('redirect_uri=https%3A%2F%2Fapp%2Fcb');
@@ -72,7 +70,7 @@ describe('WhoopOAuthService', () => {
     );
     // профиль запрошен с Bearer
     const [profileUrl, init] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(profileUrl).toBe('https://whoop/api/v2/user/profile/basic');
+    expect(profileUrl).toBe(`${WHOOP_API_BASE}/v2/user/profile/basic`);
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer AT');
   });
 });

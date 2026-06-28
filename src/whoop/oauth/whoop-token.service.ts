@@ -3,14 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { WhoopAccount } from '../entities/whoop-account.entity';
+import { WHOOP_TOKEN_URL } from '../whoop.constants';
 import { decrypt, encrypt } from '../whoop-crypto';
 import { WhoopNotConnectedError } from '../whoop.errors';
 import type { WhoopProfile, WhoopTokenResponse } from '../whoop.types';
 
 /** Обновлять access-токен, если до истечения осталось меньше этого, мс. */
 const EXPIRY_SKEW_MS = 60_000;
-
-const DEFAULT_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token';
 
 /**
  * Хранение и выдача OAuth-токенов WHOOP: обмен кода, шифрованное хранение, ленивый refresh с
@@ -138,8 +137,7 @@ export class WhoopTokenService {
   private async postToken(
     params: Record<string, string>,
   ): Promise<WhoopTokenResponse> {
-    const url = this.config.get<string>('WHOOP_TOKEN_URL', DEFAULT_TOKEN_URL);
-    const res = await fetch(url, {
+    const res = await fetch(WHOOP_TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(params).toString(),

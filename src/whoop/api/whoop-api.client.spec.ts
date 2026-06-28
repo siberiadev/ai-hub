@@ -1,10 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { WhoopTokenService } from '../oauth/whoop-token.service';
+import { WHOOP_API_BASE } from '../whoop.constants';
 import { WhoopApiClient } from './whoop-api.client';
 
 function config(): ConfigService {
   const vals: Record<string, string> = {
-    WHOOP_API_BASE: 'https://api',
     WHOOP_API_THROTTLE_MS: '0', // мгновенные тесты
     WHOOP_API_BACKOFF_MS: '1',
   };
@@ -48,7 +48,7 @@ describe('WhoopApiClient', () => {
     await expect(client.getWorkout('w1')).resolves.toEqual({ id: 'w1' });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://api/v2/activity/workout/w1');
+    expect(url).toBe(`${WHOOP_API_BASE}/v2/activity/workout/w1`);
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer AT');
   });
 

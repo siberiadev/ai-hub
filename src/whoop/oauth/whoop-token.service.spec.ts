@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { WhoopAccount } from '../entities/whoop-account.entity';
+import { WHOOP_TOKEN_URL } from '../whoop.constants';
 import { decrypt, encrypt } from '../whoop-crypto';
 import { WhoopTokenService } from './whoop-token.service';
 
@@ -11,7 +12,6 @@ function makeConfig(): ConfigService {
     WHOOP_CLIENT_ID: 'cid',
     WHOOP_CLIENT_SECRET: 'csec',
     WHOOP_REDIRECT_URI: 'https://app/cb',
-    WHOOP_TOKEN_URL: 'https://whoop/token',
   };
   return {
     get: (k: string, d?: string) => vals[k] ?? d,
@@ -72,7 +72,7 @@ describe('WhoopTokenService', () => {
 
     expect(tokens.access_token).toBe('AT');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://whoop/token');
+    expect(url).toBe(WHOOP_TOKEN_URL);
     expect((init.headers as Record<string, string>)['Content-Type']).toBe(
       'application/x-www-form-urlencoded',
     );

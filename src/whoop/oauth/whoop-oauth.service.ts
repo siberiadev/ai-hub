@@ -2,12 +2,12 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OAuthStateStore } from './oauth-state.store';
 import { WhoopTokenService } from './whoop-token.service';
+import {
+  WHOOP_API_BASE,
+  WHOOP_AUTH_URL,
+  WHOOP_SCOPES,
+} from '../whoop.constants';
 import type { WhoopProfile } from '../whoop.types';
-
-const DEFAULT_AUTH_URL = 'https://api.prod.whoop.com/oauth/oauth2/auth';
-const DEFAULT_API_BASE = 'https://api.prod.whoop.com/developer';
-const DEFAULT_SCOPES =
-  'offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout';
 
 /** Authorization Code Flow WHOOP: построение authorize-URL, обработка callback, профиль. */
 @Injectable()
@@ -26,11 +26,10 @@ export class WhoopOAuthService {
       response_type: 'code',
       client_id: this.config.getOrThrow<string>('WHOOP_CLIENT_ID'),
       redirect_uri: this.config.getOrThrow<string>('WHOOP_REDIRECT_URI'),
-      scope: this.config.get<string>('WHOOP_SCOPES', DEFAULT_SCOPES),
+      scope: WHOOP_SCOPES,
       state: this.stateStore.issue(),
     });
-    const authUrl = this.config.get<string>('WHOOP_AUTH_URL', DEFAULT_AUTH_URL);
-    return { url: `${authUrl}?${params.toString()}` };
+    return { url: `${WHOOP_AUTH_URL}?${params.toString()}` };
   }
 
   /** Валидирует state, меняет code на токены, тянет профиль (→ user_id), сохраняет аккаунт. */
@@ -52,8 +51,7 @@ export class WhoopOAuthService {
   }
 
   private async fetchProfile(accessToken: string): Promise<WhoopProfile> {
-    const base = this.config.get<string>('WHOOP_API_BASE', DEFAULT_API_BASE);
-    const res = await fetch(`${base}/v2/user/profile/basic`, {
+    const res = await fetch(`${WHOOP_API_BASE}/v2/user/profile/basic`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok) {
