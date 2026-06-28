@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ClaudeClientService } from '../claude/claude-client.service';
 import { ClaudeEvent, RunResult } from '../claude/claude.types';
-import { SessionService } from '../session/session.service';
+import { deriveTitle, SessionService } from '../session/session.service';
 import { ChatQueue } from './chat-queue';
 
 /**
@@ -66,6 +66,11 @@ export class ConversationService {
         // отдаём result наверх — вызывающий (Telegram) покажет текст ошибки.
         if (!resume) this.sessions.discardIfUnused(chatId, sessionId);
       } else {
+        // Первый успешный ход сессии → авто-заголовок из первого сообщения.
+        if (!resume) {
+          const title = deriveTitle(message);
+          if (title) this.sessions.setTitleIfEmpty(chatId, sessionId, title);
+        }
         this.sessions.recordTurn(chatId, sessionId);
       }
       return result;

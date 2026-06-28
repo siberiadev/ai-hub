@@ -12,6 +12,22 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ResolveResult, SessionRecord } from './session.types';
 
+/** Максимальная длина авто-заголовка сессии (символов). */
+const TITLE_MAX_LEN = 40;
+
+/**
+ * Делает короткий заголовок из первого сообщения пользователя: схлопывает пробелы
+ * и переносы в один пробел, обрезает до TITLE_MAX_LEN символов (с «…», если длиннее).
+ * Пустой/пробельный вход → ''.
+ */
+export function deriveTitle(message: string): string {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > TITLE_MAX_LEN
+    ? normalized.slice(0, TITLE_MAX_LEN).trimEnd() + '…'
+    : normalized;
+}
+
 /** Сырая строка таблицы sessions (snake_case). */
 interface SessionRow {
   session_id: string;
@@ -156,6 +172,19 @@ export class SessionService implements OnModuleInit, OnModuleDestroy {
         `recordTurn: no session ${sessionId} for chat ${chatId}`,
       );
     }
+  }
+
+  /**
+   * Ставит заголовок сессии только если он ещё не задан (idempotent) — для
+   * авто-заголовка из первого сообщения. Повторные вызовы не перетирают title.
+   */
+  setTitleIfEmpty(chatId: string, sessionId: string, title: string): void {
+    this.db
+      .prepare(
+        `UPDATE sessions SET title = ?
+         WHERE session_id = ? AND chat_id = ? AND title IS NULL`,
+      )
+      .run(title, sessionId, chatId);
   }
 
   /**

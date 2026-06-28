@@ -1,6 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SessionService } from './session.service';
+import { deriveTitle, SessionService } from './session.service';
 
 function makeService(): SessionService {
   const config = {
@@ -114,5 +114,39 @@ describe('SessionService', () => {
     service.recordTurn('chat-1', r.sessionId);
     expect(service.discardIfUnused('chat-1', r.sessionId)).toBe(false);
     expect(service.getActive('chat-1')?.sessionId).toBe(r.sessionId);
+  });
+
+  describe('deriveTitle', () => {
+    it('длинная строка обрезается с многоточием', () => {
+      const t = deriveTitle('a'.repeat(100));
+      expect(t.endsWith('…')).toBe(true);
+      expect(t.length).toBe(41); // 40 символов + «…»
+    });
+
+    it('схлопывает переносы и лишние пробелы', () => {
+      expect(deriveTitle('  привет\n\nкак   дела  ')).toBe('привет как дела');
+    });
+
+    it('пустой/пробельный вход → пустая строка', () => {
+      expect(deriveTitle('   \n  ')).toBe('');
+      expect(deriveTitle('')).toBe('');
+    });
+  });
+
+  describe('setTitleIfEmpty', () => {
+    it('ставит title при null и не перетирает при повторе', () => {
+      const r = service.resolveForMessage('chat-1');
+      service.setTitleIfEmpty('chat-1', r.sessionId, 'Первый');
+      expect(service.list('chat-1')[0].title).toBe('Первый');
+
+      service.setTitleIfEmpty('chat-1', r.sessionId, 'Второй');
+      expect(service.list('chat-1')[0].title).toBe('Первый');
+    });
+
+    it('не трогает чужой chatId', () => {
+      const r = service.resolveForMessage('chat-1');
+      service.setTitleIfEmpty('chat-2', r.sessionId, 'Чужой');
+      expect(service.list('chat-1')[0].title).toBeNull();
+    });
   });
 });
