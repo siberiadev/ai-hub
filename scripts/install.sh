@@ -151,6 +151,26 @@ if [ "$run_wizard" -eq 1 ] && [ -r /dev/tty ]; then
   ask CLAUDE_PERMISSION_MODE     "режим разрешений claude" "bypassPermissions"
   ask CLAUDE_WORKSPACE           "рабочая папка claude" "$APP_DIR/workspace"
   ask CLAUDE_TIMEOUT_MS          "таймаут одного хода, мс (для кодовых задач больше)" "600000"
+
+  # --- WHOOP-интеграция (опционально) ---
+  echo
+  read -rp "    Настроить WHOOP-интеграцию (БД + OAuth)? [y/N]: " want_whoop </dev/tty || true
+  if [ "${want_whoop:-N}" = "y" ] || [ "${want_whoop:-N}" = "Y" ]; then
+    ask_secret DATABASE_URL        "строка Postgres (managed, со sslmode=require)"
+    [ -n "$(get_env DATABASE_URL)" ] && set_env DATABASE_SSL true
+    ask        WHOOP_CLIENT_ID     "Client ID из WHOOP Developer Dashboard"
+    ask_secret WHOOP_CLIENT_SECRET "Client Secret из WHOOP Dashboard"
+    ask        WHOOP_REDIRECT_URI  "redirect URL — ТОЧНО как в Dashboard, https://<host>/whoop/oauth/callback"
+    # Секреты, которые неудобно вводить руками — генерируем, если ещё не заданы.
+    if [ -z "$(get_env WHOOP_TOKEN_ENC_KEY)" ]; then
+      set_env WHOOP_TOKEN_ENC_KEY "$(openssl rand -base64 32)"
+      log "WHOOP_TOKEN_ENC_KEY сгенерирован"
+    fi
+    if [ -z "$(get_env WHOOP_CONNECT_SECRET)" ]; then
+      set_env WHOOP_CONNECT_SECRET "$(openssl rand -hex 16)"
+      log "WHOOP_CONNECT_SECRET сгенерирован (значение — в $ENV_FILE; нужен для /whoop/oauth/start?key=…)"
+    fi
+  fi
 elif [ "$run_wizard" -eq 1 ]; then
   warn "Нет терминала для мастера — заполни $ENV_FILE вручную (TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_IDS)."
 fi

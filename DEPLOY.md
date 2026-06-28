@@ -29,6 +29,11 @@ curl -fsSL https://raw.githubusercontent.com/siberiadev/ai-hub/main/scripts/boot
    - `TELEGRAM_ALLOWED_USER_IDS` — твой Telegram id; **можно оставить пустым** и узнать позже;
    - `CLAUDE_PERMISSION_MODE` — Enter (дефолт `bypassPermissions`);
    - `CLAUDE_WORKSPACE` — Enter (дефолт `~/ai-hub/workspace`).
+   - **WHOOP-интеграция** — отдельный вопрос «Настроить WHOOP? [y/N]» (опционально). При `y` спросит
+     `DATABASE_URL` (managed Postgres), `WHOOP_CLIENT_ID/SECRET`, `WHOOP_REDIRECT_URI` и **сам
+     сгенерирует** `WHOOP_TOKEN_ENC_KEY` и `WHOOP_CONNECT_SECRET`. Пропустишь (`N`) — WHOOP просто
+     выключен, бот работает как обычно. Настроить позже: `bash scripts/install.sh --reconfigure`.
+     Не забудь зарегистрировать `WHOOP_REDIRECT_URI` и webhook-URL в WHOOP Dashboard (см. ниже про туннель).
 3. **Авторизовать Claude** (один раз, под тем же пользователем):
    ```bash
    claude        # затем /login → открыть ссылку в браузере на ноуте → вставить код
@@ -79,6 +84,85 @@ curl -fsSL https://raw.githubusercontent.com/siberiadev/ai-hub/main/scripts/boot
   отключи вход root по SSH и используй ключи вместо паролей, поставь `fail2ban`.
 - **Зависимости:** иногда проверяй `npm audit` и обновляйся.
 
+## Публичный доступ для WHOOP (Cloudflare Tunnel)
+
+Нужен только для интеграции WHOOP (приём вебхуков + OAuth-callback). WHOOP шлёт вебхуки на публичный
+HTTPS-URL, а приложение слушает только `127.0.0.1`. Открываем доступ **без** проброса входящих портов —
+через исходящий туннель Cloudflare. Наружу при этом доступен **только путь `/whoop/*`**.
+
+> Требуется домен, добавленный в Cloudflare (бесплатный план подходит).
+
+```bash
+# 1. Установить cloudflared (Debian/Ubuntu, репозиторий Cloudflare)
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | \
+  sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" | \
+  sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt-get update && sudo apt-get install -y cloudflared
+
+# 2. Авторизовать домен (откроется ссылка — выбрать зону в браузере)
+cloudflared tunnel login
+
+# 3. Создать именованный туннель (получишь UUID и creds-файл в ~/.cloudflared/<UUID>.json)
+cloudflared tunnel create ai-hub
+```
+
+Конфиг `~/.cloudflared/config.yml` (подставь `<UUID>` и свой `<host>`, напр. `whoop.example.com`):
+
+```yaml
+tunnel: <UUID>
+credentials-file: /home/<user>/.cloudflared/<UUID>.json
+ingress:
+  - hostname: <host>
+    path: /whoop/.*          # наружу пускаем только маршрут WHOOP
+    service: http://127.0.0.1:3000
+  - service: http_status:404 # всё остальное — 404 (обязательное завершающее правило)
+```
+
+```bash
+# 4. DNS-запись на туннель
+cloudflared tunnel route dns ai-hub <host>
+
+# 5. Поднять как systemd-сервис (автозапуск + рестарт при падении)
+sudo cloudflared service install
+systemctl status cloudflared
+
+# 6. Смоук-тест (через Cloudflare на 127.0.0.1:3000 → пока отдаёт корневой роут)
+curl -i https://<host>/whoop/   # маршрут есть; конкретные эндпоинты появятся в фазах WHOOP
+```
+
+После этого пропиши `WHOOP_REDIRECT_URI=https://<host>/whoop/oauth/callback` в `.env` и зарегистрируй
+в WHOOP Developer Dashboard этот redirect-URL и webhook-URL `https://<host>/whoop/webhook`.
+
+**Периметр не меняется:** ufw остаётся `OpenSSH only`, приложение слушает `127.0.0.1`, входящие порты
+не открыты — туннель работает на исходящем соединении.
+
+## Доступ Claude к данным WHOOP (MCP `whoop:read`)
+
+Чтобы Claude в боте мог читать данные WHOOP, поднимаем MCP-сервер `whoop` (тула `read`, **только
+чтение** из Postgres). Сервер — отдельный stdio-процесс, claude запускает его сам.
+
+1. **Read-only роль в Postgres** (минимум прав для MCP):
+   ```sql
+   CREATE ROLE whoop_ro LOGIN PASSWORD '...';
+   GRANT CONNECT ON DATABASE defaultdb TO whoop_ro;
+   GRANT USAGE ON SCHEMA public TO whoop_ro;
+   GRANT SELECT ON ALL TABLES IN SCHEMA public TO whoop_ro;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO whoop_ro;
+   ```
+2. **Конфиг MCP**: скопировать `.mcp.json.example` → `~/ai-hub/.mcp.json`, подставить абсолютный путь к
+   `dist/whoop/mcp/whoop-mcp.server.js` и строку read-only роли в `WHOOP_MCP_DATABASE_URL`.
+3. **Подключить к claude** (headless — детерминированно): в `.env`
+   ```
+   CLAUDE_STRICT_MCP=true
+   CLAUDE_MCP_CONFIG=/home/<user>/ai-hub/.mcp.json
+   ```
+   Грузится ровно этот набор MCP (другие свои серверы добавь в тот же файл). Пересобрать и
+   перезапустить: `npm run build && sudo systemctl restart ai-hub`.
+4. Проверка: спросить бота «покажи мои последние тренировки WHOOP» — Claude вызовет `mcp__whoop__read`.
+   (Данные появятся после OAuth-подключения и `npm run whoop:backfill`.)
+
 ## Заметки
 
 - **Авторизация без токена.** Сервис работает под тем же пользователем, что делал `claude /login` —
@@ -89,3 +173,7 @@ curl -fsSL https://raw.githubusercontent.com/siberiadev/ai-hub/main/scripts/boot
 - **Кодовые задачи и таймаут.** `CLAUDE_TIMEOUT_MS` (дефолт 600000 = 10 мин) ограничивает один ход;
   для долгих агентных правок увеличь. При срабатывании сессия убивается, следующий ход поднимет её заново.
 - **Правки своего кода на сервере** применяются только после пересборки: `npm run build && sudo systemctl restart ai-hub`.
+- **Бэкап (WHOOP).** Данные WHOOP — в managed-Postgres: включи авто-бэкапы/PITR в панели провайдера
+  (у DigitalOcean — Settings → Backups). Sessions-БД `data/ai-hub.db` входит в бэкап хоста. Проверь
+  пайплайн: `npm run whoop:status` (счётчики `failed`/`pending`, наполнение таблиц), вернуть зависшие —
+  `npm run whoop:requeue`.

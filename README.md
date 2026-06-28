@@ -125,6 +125,40 @@ npm run start:prod       # прод (после npm run build)
 | `CLAUDE_WORKSPACE` | реком. | рабочая папка для файлов claude |
 | `CLAUDE_PERMISSION_MODE` | реком. | `bypassPermissions` для headless-инструментов |
 | `WHISPER_*`, `FFMPEG_BIN` | для голоса | см. шаг 4 |
+| `DATABASE_URL`, `WHOOP_*` | для WHOOP | см. раздел ниже |
+
+## ⌚ WHOOP-интеграция (опционально)
+
+Подтягивает данные WHOOP (тренировки, сон, восстановление, циклы) **по вебхукам и историческим
+backfill** во внешний Postgres, а Claude читает их через MCP-тулу `mcp__whoop__read`. Включается только
+при заданном `DATABASE_URL` — иначе модуль тихо выключен, бот работает как обычно.
+
+Тула `read` поддерживает режимы: списки (`workout`/`sleep`/`recovery`/`cycle`), `summary` (краткая
+сводка) и `trend` — **серверная агрегация метрики по корзинам** (`metric` + `bucket: day|week|month`):
+Postgres считает avg/min/max по неделям/месяцам и наклон, Claude получает компактный ряд вместо сотен
+сырых строк (экономия токенов + детерминированные числа).
+
+**Поток:** WHOOP → вебхук (`POST /whoop/webhook`, HMAC-подпись) → журнал `whoop_webhook_event` →
+воркер дотягивает ресурс из API v2 (OAuth Bearer + авто-refresh) → таблицы `whoop_*` → MCP read-only → Claude.
+
+**Ручная настройка** (детали — в [DEPLOY.md](./DEPLOY.md)):
+1. Создать App в [WHOOP Developer Dashboard](https://developer.whoop.com/), задать scopes, redirect URL
+   и webhook URL; вписать `WHOOP_CLIENT_ID/SECRET` в `.env` (мастер `install.sh` спросит сам).
+2. Поднять публичный HTTPS под `/whoop/*` — **Cloudflare Tunnel** (наружу только этот путь).
+3. Подключить аккаунт: открыть `/whoop/oauth/start?key=<WHOOP_CONNECT_SECRET>` → авторизоваться.
+4. Залить историю: `npm run whoop:backfill -- --since 2024-01-01` (без флага — вся история).
+5. Дать доступ Claude: read-only роль в Postgres + `.mcp.json` (см. `.mcp.json.example`) +
+   `CLAUDE_STRICT_MCP=true`, `CLAUDE_MCP_CONFIG=…`.
+
+**Эксплуатация:**
+
+```bash
+npm run whoop:status     # подключение, счётчики событий (pending/failed/processed), строки по таблицам
+npm run whoop:requeue    # вернуть failed-события в очередь (failed → pending)
+```
+
+При росте `failed` бот сам пишет владельцу алерт в Telegram. **Бэкап:** включите авто-бэкапы/PITR у
+managed-Postgres; sessions-БД `data/ai-hub.db` — в бэкап хоста.
 
 ## 🧪 Тесты
 

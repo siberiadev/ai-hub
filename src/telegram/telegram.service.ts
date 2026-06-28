@@ -15,6 +15,7 @@ import { ClaudeEvent } from '../claude/claude.types';
 import { ConversationService } from '../conversation/conversation.service';
 import { SessionService } from '../session/session.service';
 import { TranscriptionService } from '../voice/transcription.service';
+import { Notifier } from '../notify/notifier';
 import {
   canRenderRich,
   chunk,
@@ -32,7 +33,9 @@ const PROGRESS_THROTTLE_MS = 1200;
  * Доступ ограничен allowlist по Telegram user id (single-user).
  */
 @Injectable()
-export class TelegramService implements OnModuleInit, OnModuleDestroy {
+export class TelegramService
+  implements OnModuleInit, OnModuleDestroy, Notifier
+{
   private readonly log = new Logger(TelegramService.name);
   private bot?: Bot;
   private allowed = new Set<number>();
@@ -132,7 +135,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const active = this.sessions.getActive(chatId);
     const lines = list.map((s, i) => {
       const mark = active && s.sessionId === active.sessionId ? '⭐' : '▫️';
-      return `${i + 1}. ${mark} ${shortId(s.sessionId)} · ходов:${s.turnCount} · ${formatAge(s.lastUsedAt)}`;
+      const label = s.title ?? shortId(s.sessionId);
+      return `${i + 1}. ${mark} ${label} · ходов:${s.turnCount} · ${formatAge(s.lastUsedAt)}`;
     });
     await ctx.reply(
       'Сессии:\n' + lines.join('\n') + '\n\nПереключиться: /resume N',
@@ -365,6 +369,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
     for (let i = 1; i < parts.length; i++) {
       await ctx.reply(parts[i]);
+    }
+  }
+
+  /** Notifier: разослать алерт владельцам из allowlist. No-op, если бот не запущен. */
+  async notifyOwner(text: string): Promise<void> {
+    if (!this.bot) return;
+    for (const id of this.allowed) {
+      try {
+        await this.bot.api.sendMessage(id, text);
+      } catch (err) {
+        this.log.warn(`notifyOwner ${id}: ${(err as Error).message}`);
+      }
     }
   }
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "whoop": {
+      "command": "node",
+      "args": ["/home/<user>/ai-hub/dist/whoop/mcp/whoop-mcp.server.js"],
+      "env": {
+        "WHOOP_MCP_DATABASE_URL": "postgres://readonly:PASSWORD@host:25060/defaultdb",
+        "DATABASE_SSL": "true"
+      }
+    }
+  }
+}
