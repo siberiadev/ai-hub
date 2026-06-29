@@ -1,8 +1,10 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +17,11 @@ import { ClaudeEvent } from '../claude/claude.types';
 import { ConversationService } from '../conversation/conversation.service';
 import { SessionService } from '../session/session.service';
 import { TranscriptionService } from '../voice/transcription.service';
+import { WhoopAuthUrlService } from '../whoop/connect/whoop-auth-url.service';
+import { WhoopBackfillTriggerService } from '../whoop/connect/whoop-backfill-trigger.service';
+import { FINANCE_IMPORT } from '../finance/finance.types';
+import type { FinanceImportService } from '../finance/import/finance-import.service';
+import { formatImportSummary } from '../finance/import/finance-summary.util';
 import { Notifier } from '../notify/notifier';
 import {
   canRenderRich,
@@ -51,6 +58,11 @@ export class TelegramService
     private readonly conversation: ConversationService,
     private readonly sessions: SessionService,
     private readonly transcription: TranscriptionService,
+    private readonly whoopAuthUrl: WhoopAuthUrlService,
+    private readonly whoopBackfill: WhoopBackfillTriggerService,
+    @Optional()
+    @Inject(FINANCE_IMPORT)
+    private readonly financeImport?: FinanceImportService,
   ) {}
 
   onModuleInit(): void {
@@ -74,14 +86,43 @@ export class TelegramService
     bot.command('new', (ctx) => this.onNew(ctx));
     bot.command('sessions', (ctx) => this.onSessions(ctx));
     bot.command('resume', (ctx) => this.onResume(ctx));
+    bot.command('whoop_start', (ctx) => this.onWhoopStart(ctx));
+    bot.command('whoop_sync', (ctx) => this.onWhoopSync(ctx));
+    bot.command('finance', (ctx) => this.onFinanceHelp(ctx));
     bot.on('message:text', (ctx) => this.onText(ctx));
     bot.on('message:voice', (ctx) => this.onVoice(ctx));
+    bot.on('message:document', (ctx) => this.onDocument(ctx));
     bot.callbackQuery(/^ask:(\d+)$/, (ctx) => this.onAskChoice(ctx));
     bot.catch((err) => this.log.error(`bot error: ${err.message}`, err.stack));
 
+    // Меню команд Telegram (то, что показывается в клиенте). Best-effort.
+    void bot.api
+      .setMyCommands([
+        { command: 'new', description: 'новая сессия' },
+        { command: 'sessions', description: 'список сессий' },
+        { command: 'resume', description: 'переключиться на сессию N' },
+        { command: 'whoop_start', description: 'подключить WHOOP' },
+        {
+          command: 'whoop_sync',
+          description: 'загрузить историю WHOOP (backfill)',
+        },
+        { command: 'finance', description: 'импорт банковских выписок (PDF)' },
+      ])
+      .catch((err) =>
+        this.log.warn(`setMyCommands: ${(err as Error).message}`),
+      );
+
+    // Кнопка «Menu» слева от поля ввода → показывает список команд выше.
+    void bot.api
+      .setChatMenuButton({ menu_button: { type: 'commands' } })
+      .catch((err) =>
+        this.log.warn(`setChatMenuButton: ${(err as Error).message}`),
+      );
+
     void bot
       .start({
-        onStart: (info) => this.log.log(`Telegram-бот запущен: @${info.username}`),
+        onStart: (info) =>
+          this.log.log(`Telegram-бот запущен: @${info.username}`),
       })
       .catch((err) =>
         this.log.error(`не удалось запустить бота: ${(err as Error).message}`),
@@ -94,7 +135,10 @@ export class TelegramService
 
   // --- middleware ---
 
-  private guard = async (ctx: Context, next: () => Promise<void>): Promise<void> => {
+  private guard = async (
+    ctx: Context,
+    next: () => Promise<void>,
+  ): Promise<void> => {
     const id = ctx.from?.id;
     if (!id || !this.allowed.has(id)) {
       await ctx.reply(
@@ -115,9 +159,63 @@ export class TelegramService
         'Команды:\n' +
         '/new — новая сессия\n' +
         '/sessions — список сессий\n' +
-        '/resume N — переключиться на сессию N\n\n' +
+        '/resume N — переключиться на сессию N\n' +
+        '/whoop_start — подключить WHOOP\n' +
+        '/whoop_sync — загрузить историю WHOOP (backfill)\n\n' +
         `Ваш ID: ${ctx.from?.id}`,
     );
+  }
+
+  /** /whoop_start: строит authorize-URL WHOOP и присылает ссылку для согласия. */
+  private async onWhoopStart(ctx: Context): Promise<void> {
+    const configured =
+      this.config.get<string>('WHOOP_CLIENT_ID')?.trim() &&
+      this.config.get<string>('WHOOP_REDIRECT_URI')?.trim();
+    if (!configured) {
+      await ctx.reply(
+        '⚠️ WHOOP не настроен (нет WHOOP_CLIENT_ID / WHOOP_REDIRECT_URI).',
+      );
+      return;
+    }
+    const { url } = this.whoopAuthUrl.buildAuthorizeUrl();
+    await ctx.reply('🔗 Подключить WHOOP:\n' + url, {
+      link_preview_options: { is_disabled: true },
+    });
+  }
+
+  /** /whoop_sync [since]: запускает исторический бэкфилл WHOOP в фоне. */
+  private async onWhoopSync(ctx: Context): Promise<void> {
+    if (!this.whoopBackfill.configured) {
+      await ctx.reply(
+        '⚠️ WHOOP backfill не настроен (нет WHOOP_CONNECT_SECRET).',
+      );
+      return;
+    }
+    const since = (ctx.match as string)?.trim() || undefined;
+    const status = await ctx.reply('⏳ Запускаю загрузку истории WHOOP…');
+    try {
+      const res = await this.whoopBackfill.trigger(since);
+      const scope =
+        res.since === '2000-01-01T00:00:00.000Z'
+          ? 'вся история'
+          : `с ${res.since}`;
+      const text = res.alreadyRunning
+        ? '↻ Бэкфилл уже идёт — дождись завершения.'
+        : `✅ Загрузка запущена (${scope}). Идёт в фоне — результат смотри позже.`;
+      await ctx.api
+        .editMessageText(ctx.chat!.id, status.message_id, text)
+        .catch(() => undefined);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`whoop_sync failed: ${msg}`);
+      await ctx.api
+        .editMessageText(
+          ctx.chat!.id,
+          status.message_id,
+          `❌ Не удалось запустить: ${msg}`,
+        )
+        .catch(() => undefined);
+    }
   }
 
   private async onNew(ctx: Context): Promise<void> {
@@ -154,7 +252,9 @@ export class TelegramService
     }
     const target = list[n - 1];
     this.sessions.setActive(chatId, target.sessionId);
-    await ctx.reply(`↩️ Переключился на сессию ${n} (${shortId(target.sessionId)}).`);
+    await ctx.reply(
+      `↩️ Переключился на сессию ${n} (${shortId(target.sessionId)}).`,
+    );
   }
 
   // --- основной поток ---
@@ -183,7 +283,11 @@ export class TelegramService
       const text = await this.transcription.transcribe(oggPath);
       if (!text) {
         await ctx.api
-          .editMessageText(ctx.chat!.id, status.message_id, '🎤 Не удалось распознать.')
+          .editMessageText(
+            ctx.chat!.id,
+            status.message_id,
+            '🎤 Не удалось распознать.',
+          )
           .catch(() => undefined);
         return;
       }
@@ -195,11 +299,78 @@ export class TelegramService
       const msg = err instanceof Error ? err.message : String(err);
       this.log.error(`voice failed for chat ${chatId}: ${msg}`);
       await ctx.api
-        .editMessageText(ctx.chat!.id, status.message_id, `❌ Ошибка распознавания: ${msg}`)
+        .editMessageText(
+          ctx.chat!.id,
+          status.message_id,
+          `❌ Ошибка распознавания: ${msg}`,
+        )
         .catch(() => undefined);
     } finally {
       if (oggPath) await rm(oggPath, { force: true }).catch(() => undefined);
     }
+  }
+
+  /** Подсказка по финансовому модулю. */
+  private async onFinanceHelp(ctx: Context): Promise<void> {
+    if (!this.financeImport) {
+      await ctx.reply('⚠️ Финансовый модуль выключен (нет DATABASE_URL).');
+      return;
+    }
+    await ctx.reply(
+      '📄 Пришли PDF-выписку файлом — разберу и занесу транзакции в леджер.\n\n' +
+        'Поддерживаются: Mox Bank, Standard Chartered, Alipay HK.\n' +
+        'Повторная загрузка того же файла отклоняется (дедуп по содержимому).',
+    );
+  }
+
+  /** Документ (ожидаем PDF-выписку): скачать → распарсить → занести в леджер → сводка. */
+  private async onDocument(ctx: Context): Promise<void> {
+    const chatId = String(ctx.chat!.id);
+    this.pendingAsk.delete(chatId);
+
+    const doc = ctx.message?.document;
+    const name = doc?.file_name ?? 'file';
+    const isPdf = doc?.mime_type === 'application/pdf' || /\.pdf$/i.test(name);
+    if (!isPdf) {
+      await ctx.reply(
+        '📄 Пришли PDF-выписку банка (Mox / Standard Chartered / Alipay).',
+      );
+      return;
+    }
+    if (!this.financeImport) {
+      await ctx.reply('⚠️ Финансовый модуль выключен (нет DATABASE_URL).');
+      return;
+    }
+
+    await ctx.replyWithChatAction('typing').catch(() => undefined);
+    const status = await ctx.reply('📄 разбираю выписку…');
+    try {
+      const buf = await this.downloadDocument(ctx);
+      const result = await this.financeImport.importPdf(buf, name);
+      const text = formatImportSummary(result);
+      await ctx.api
+        .editMessageText(ctx.chat!.id, status.message_id, text)
+        .catch(() => undefined);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`document import failed for chat ${chatId}: ${msg}`);
+      await ctx.api
+        .editMessageText(
+          ctx.chat!.id,
+          status.message_id,
+          `❌ Ошибка импорта: ${msg}`,
+        )
+        .catch(() => undefined);
+    }
+  }
+
+  /** Скачивает документ в память (Buffer). */
+  private async downloadDocument(ctx: Context): Promise<Buffer> {
+    const file = await ctx.getFile();
+    const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
   }
 
   /** Скачивает голосовой файл во временный .ogg, возвращает путь. */
