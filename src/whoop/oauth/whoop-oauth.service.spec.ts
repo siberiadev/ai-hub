@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { OAuthStateStore } from './oauth-state.store';
 import { WhoopOAuthService } from './whoop-oauth.service';
 import { WhoopTokenService } from './whoop-token.service';
-import { WHOOP_API_BASE, WHOOP_AUTH_URL } from '../whoop.constants';
+import { WHOOP_API_BASE } from '../whoop.constants';
 
 function makeConfig(): ConfigService {
   const vals: Record<string, string> = {
@@ -23,18 +23,6 @@ describe('WhoopOAuthService', () => {
   afterEach(() => {
     global.fetch = realFetch;
     jest.clearAllMocks();
-  });
-
-  it('buildAuthorizeUrl собирает URL с обязательными параметрами', () => {
-    const store = new OAuthStateStore();
-    const svc = new WhoopOAuthService(makeConfig(), {} as WhoopTokenService, store);
-    const { url } = svc.buildAuthorizeUrl();
-    expect(url).toContain(`${WHOOP_AUTH_URL}?`);
-    expect(url).toContain('response_type=code');
-    expect(url).toContain('client_id=cid');
-    expect(url).toContain('redirect_uri=https%3A%2F%2Fapp%2Fcb');
-    expect(url).toContain('scope=offline');
-    expect(url).toMatch(/state=[^&]+/);
   });
 
   it('handleCallback отвергает невалидный state (не дёргает обмен)', async () => {

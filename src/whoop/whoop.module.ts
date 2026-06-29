@@ -12,8 +12,8 @@ import { WhoopWebhookEvent } from './entities/whoop-webhook-event.entity';
 import { WhoopWorkout } from './entities/whoop-workout.entity';
 import { WhoopOAuthController } from './oauth/whoop-oauth.controller';
 import { WhoopOAuthService } from './oauth/whoop-oauth.service';
-import { OAuthStateStore } from './oauth/oauth-state.store';
 import { WhoopTokenService } from './oauth/whoop-token.service';
+import { WhoopConnectModule } from './connect/whoop-connect.module';
 import { WhoopWebhookController } from './webhook/whoop-webhook.controller';
 import { WhoopSignatureGuard } from './webhook/whoop-signature.guard';
 import { WhoopWebhookService } from './webhook/whoop-webhook.service';
@@ -54,6 +54,7 @@ export class WhoopModule {
           WhoopWebhookEvent,
         ]),
         TelegramModule, // для NOTIFIER (алерты владельцу из WhoopMonitorService)
+        WhoopConnectModule, // общий OAuthStateStore + WhoopAuthUrlService
       ],
       controllers: [
         WhoopOAuthController,
@@ -63,7 +64,6 @@ export class WhoopModule {
       providers: [
         WhoopOAuthService,
         WhoopTokenService,
-        OAuthStateStore,
         WhoopWebhookService,
         WhoopSignatureGuard,
         WhoopApiClient,

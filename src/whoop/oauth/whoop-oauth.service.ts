@@ -2,14 +2,13 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OAuthStateStore } from './oauth-state.store';
 import { WhoopTokenService } from './whoop-token.service';
-import {
-  WHOOP_API_BASE,
-  WHOOP_AUTH_URL,
-  WHOOP_SCOPES,
-} from '../whoop.constants';
+import { WHOOP_API_BASE } from '../whoop.constants';
 import type { WhoopProfile } from '../whoop.types';
 
-/** Authorization Code Flow WHOOP: построение authorize-URL, обработка callback, профиль. */
+/**
+ * Authorization Code Flow WHOOP: обработка callback (обмен code → токены, профиль).
+ * Построение authorize-URL вынесено в {@link WhoopAuthUrlService} (общий модуль).
+ */
 @Injectable()
 export class WhoopOAuthService {
   private readonly log = new Logger(WhoopOAuthService.name);
@@ -19,18 +18,6 @@ export class WhoopOAuthService {
     private readonly tokens: WhoopTokenService,
     private readonly stateStore: OAuthStateStore,
   ) {}
-
-  /** Строит URL согласия WHOOP с одноразовым state. */
-  buildAuthorizeUrl(): { url: string } {
-    const params = new URLSearchParams({
-      response_type: 'code',
-      client_id: this.config.getOrThrow<string>('WHOOP_CLIENT_ID'),
-      redirect_uri: this.config.getOrThrow<string>('WHOOP_REDIRECT_URI'),
-      scope: WHOOP_SCOPES,
-      state: this.stateStore.issue(),
-    });
-    return { url: `${WHOOP_AUTH_URL}?${params.toString()}` };
-  }
 
   /** Валидирует state, меняет code на токены, тянет профиль (→ user_id), сохраняет аккаунт. */
   async handleCallback(

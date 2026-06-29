@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WhoopOAuthService } from './whoop-oauth.service';
+import { WhoopAuthUrlService } from '../connect/whoop-auth-url.service';
 
 /** OAuth-эндпоинты WHOOP. `/start` защищён секретом, `/callback` — целевой redirect URI. */
 @Controller('whoop/oauth')
@@ -17,6 +18,7 @@ export class WhoopOAuthController {
 
   constructor(
     private readonly oauth: WhoopOAuthService,
+    private readonly authUrl: WhoopAuthUrlService,
     private readonly config: ConfigService,
   ) {}
 
@@ -31,7 +33,7 @@ export class WhoopOAuthController {
     if (!secret || key !== secret) {
       throw new NotFoundException();
     }
-    return this.oauth.buildAuthorizeUrl();
+    return this.authUrl.buildAuthorizeUrl();
   }
 
   /** Callback WHOOP: обмен кода на токены и сохранение аккаунта. */
