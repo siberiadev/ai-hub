@@ -28,7 +28,7 @@ export class WhoopBackfillTriggerService {
     const secret = this.config.get<string>('WHOOP_CONNECT_SECRET')?.trim();
     if (!secret) {
       throw new Error(
-        'WHOOP_CONNECT_SECRET не задан — нечем авторизовать запуск.',
+        'WHOOP_CONNECT_SECRET is not set — nothing to authorize the run with.',
       );
     }
     const port = Number(this.config.get<string>('PORT') ?? 3000);
@@ -39,9 +39,7 @@ export class WhoopBackfillTriggerService {
     const res = await fetch(url, { method: 'POST' });
     const body = await res.text();
     if (!res.ok) {
-      throw new Error(
-        `приложение ответило ${res.status}: ${body || '(пусто)'}`,
-      );
+      throw new Error(`app responded ${res.status}: ${body || '(empty)'}`);
     }
     return JSON.parse(body) as BackfillTriggerResult;
   }
