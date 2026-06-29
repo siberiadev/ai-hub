@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { ClaudeClientService } from '../claude/claude-client.service';
 import { ClaudeEvent, RunResult } from '../claude/claude.types';
 import { deriveTitle, SessionService } from '../session/session.service';
@@ -36,6 +37,23 @@ export class ConversationService {
     );
   }
 
+  /**
+   * Одноразовый прогон промпта в СВЕЖЕЙ сессии, без записи в SessionService.
+   * Для фоновых задач (планировщик): не засоряет историю интерактивных чатов и не
+   * пересекается с ними по сессии. Каждый вызов — новый UUID, `resume: false`.
+   */
+  async runOnce(prompt: string): Promise<RunResult> {
+    const sessionId = randomUUID();
+    const { events$, done } = this.claude.run({
+      message: prompt,
+      sessionId,
+      resume: false,
+    });
+    // Гасим ошибки потока: финал берём из `done` (как в runTurn).
+    events$.subscribe({ error: () => undefined });
+    return done;
+  }
+
   private async runTurn(
     chatId: string,
     message: string,
@@ -49,7 +67,8 @@ export class ConversationService {
       next: (evt) => {
         if (evt.type === 'assistant') {
           for (const block of evt.message.content) {
-            if (block.type === 'tool_use') this.log.log(`tool_use: ${block.name}`);
+            if (block.type === 'tool_use')
+              this.log.log(`tool_use: ${block.name}`);
           }
         }
         onEvent?.(evt);

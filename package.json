@@ -28,7 +28,8 @@
     "whoop:status": "nest build && node dist/whoop/status.cli",
     "whoop:requeue": "nest build && node dist/whoop/requeue.cli",
     "whoop:mcp": "node dist/whoop/mcp/whoop-mcp.server.js",
-    "finance:mcp": "node dist/finance/mcp/finance-mcp.server.js"
+    "finance:mcp": "node dist/finance/mcp/finance-mcp.server.js",
+    "scheduler:mcp": "node dist/scheduler/mcp/scheduler-mcp.server.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -38,6 +39,7 @@
     "@nestjs/platform-fastify": "^11.1.27",
     "@nestjs/typeorm": "^11.0.2",
     "better-sqlite3": "^12.11.1",
+    "cron-parser": "^5.6.1",
     "grammy": "^1.44.0",
     "pdfjs-dist": "^6.1.200",
     "pg": "^8.22.0",

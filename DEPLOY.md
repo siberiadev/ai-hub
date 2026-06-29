@@ -170,6 +170,29 @@ stdio-процесс, claude запускает его сам. Тулы:
    (Данные появятся после OAuth-подключения и бэкфилла.) Бэкфилл можно запустить из бота («запусти
    backfill WHOOP» → `mcp__whoop__backfill`) или с сервера `npm run whoop:backfill`.
 
+## Планировщик задач (MCP `scheduler`)
+
+Чтобы Claude мог сам ставить повторяющиеся и разовые задачи (ежедневные саммари, напоминания),
+поднимаем MCP-сервер `scheduler`. Тикер в приложении (`SchedulerService`) раз в `SCHEDULER_TICK_SEC`
+секунд забирает из таблицы `scheduled_task` задачи, у которых наступил `next_run_at`, и прогоняет
+их промпт через Claude (в свежей сессии), доставляя результат владельцу в Telegram. Тулы:
+- `schedule_create` — создать задачу: ПОВТОРЯЮЩУЮСЯ (`cron` + опц. `endAt`/`maxRuns`) или РАЗОВУЮ
+  (`runAt` — ISO дата-время; после срабатывания `status=completed`).
+- `schedule_list` / `schedule_update` / `schedule_delete` — управление задачами.
+
+Сам MCP read/write не трогает БД напрямую — тулы шлют HTTP на `/scheduler/tasks` основного
+приложения (там валидация cron и расчёт расписания), эндпоинт защищён `?key=<SCHEDULER_ADMIN_SECRET>`
+(неверный ключ → 404).
+
+1. **Секрет**: задать `SCHEDULER_ADMIN_SECRET` в `.env` приложения (`openssl rand -hex 16`).
+2. **Конфиг MCP**: в `~/ai-hub/.mcp.json` добавить сервер `scheduler` (см. `.mcp.json.example`):
+   абсолютный путь к `dist/scheduler/mcp/scheduler-mcp.server.js`, `SCHEDULER_APP_URL`
+   (по умолчанию `http://127.0.0.1:3000`) и `SCHEDULER_ADMIN_SECRET` (= значение из `.env`).
+3. Пересобрать и перезапустить: `npm run build && sudo systemctl restart ai-hub`.
+4. Проверка: попросить бота «настрой ежедневное саммари сна в 8 утра» или «напомни в пятницу
+   отправить платёж» — Claude вызовет `mcp__scheduler__schedule_create`; «покажи мои задачи» →
+   `mcp__scheduler__schedule_list`.
+
 ## Заметки
 
 - **Авторизация без токена.** Сервис работает под тем же пользователем, что делал `claude /login` —

@@ -9,6 +9,14 @@
         "WHOOP_APP_URL": "http://127.0.0.1:3000",
         "WHOOP_ADMIN_SECRET": "<= WHOOP_CONNECT_SECRET из .env основного приложения>"
       }
+    },
+    "scheduler": {
+      "command": "node",
+      "args": ["/home/<user>/ai-hub/dist/scheduler/mcp/scheduler-mcp.server.js"],
+      "env": {
+        "SCHEDULER_APP_URL": "http://127.0.0.1:3000",
+        "SCHEDULER_ADMIN_SECRET": "<= SCHEDULER_ADMIN_SECRET из .env основного приложения>"
+      }
     }
   }
 }

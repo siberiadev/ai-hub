@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { ConversationModule } from './conversation/conversation.module';
 import { DatabaseModule } from './database/database.module';
 import { FinanceModule } from './finance/finance.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { WhoopModule } from './whoop/whoop.module';
 
@@ -16,6 +17,7 @@ import { WhoopModule } from './whoop/whoop.module';
     FinanceModule.forRoot(), // global: токен FINANCE_IMPORT для TelegramService. No-op без DATABASE_URL.
     ConversationModule, // подтягивает SessionModule + ClaudeModule
     TelegramModule,
+    SchedulerModule.forRoot(), // ПОСЛЕ TelegramModule: нужны ConversationService + NOTIFIER. No-op без DATABASE_URL.
   ],
   controllers: [AppController],
   providers: [AppService],
